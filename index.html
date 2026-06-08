@@ -74,11 +74,12 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 .metrics{display:grid;grid-template-columns:1fr;gap:14px}
 .mrow{font-size:13px;line-height:1.6}
 .mrow .k{color:var(--muted);font-size:11px;letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:3px}
-.corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;font-size:13px}
-.corner-grid .cc{display:flex;justify-content:space-between;padding:6px 10px;background:var(--panel2);border-radius:8px}
-.corner-grid .cc.weak{outline:1px solid var(--orange)}
-.corner-grid .cc .n{color:var(--muted)}
-.corner-grid .cc .v{font-weight:700}
+.corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.corner-grid .cc{padding:11px 13px;background:var(--panel2);border-radius:10px;border:1px solid transparent}
+.corner-grid .cc.weak{border-color:var(--orange)}
+.corner-grid .cc .cn{color:var(--muted);font-size:11px;letter-spacing:.14em;font-weight:700}
+.corner-grid .cc .cm{font-size:17px;font-weight:700;margin:4px 0 5px;color:var(--text)}
+.corner-grid .cc .cs{color:#7d7d8c;font-size:12px}
 
 .grades{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .grade{background:var(--panel2);border-radius:12px;padding:12px 10px;text-align:center;border-top:2px solid}
@@ -106,7 +107,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v5</div>
+    <div class="ver">v6</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -520,9 +521,11 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
     bars+=`<div class="bar"><div class="val">${mmv[i].toFixed(2)}</div>
       <div class="col" style="height:${pct}%;background:${barCols[i]}"></div>
       <div class="lab">${barLab[i]}</div></div>`;}
-  const m=cor.metrics; const weak=cor.worst;
-  const cc=k=>`<div class="cc${k===weak?' weak':''}"><span class="n">${k}</span>
-    <span class="v">${m[k].mm.toFixed(2)}mm <span style="color:#666;font-weight:400">· BGS ${m[k].bgs.toFixed(1)} · TAG ${m[k].tag}</span></span></div>`;
+  const m=cor.metrics; const weak=cor.worst; const showWeak=m[weak].setback>0;
+  const cc=k=>`<div class="cc${(k===weak&&showWeak)?' weak':''}">
+    <div class="cn">${k}</div>
+    <div class="cm">${m[k].mm<=0.05?'Sharp':m[k].mm.toFixed(2)+' mm'}</div>
+    <div class="cs">BGS ${m[k].bgs.toFixed(1)} &nbsp;·&nbsp; TAG ${m[k].tag}</div></div>`;
   const grade=(co,g,l,col)=>`<div class="grade" style="border-color:${col}">
     <div class="co">${co}</div><div class="g" style="color:${col}">${g}</div><div class="l">${l}</div></div>`;
   let picks='';
@@ -606,7 +609,7 @@ document.getElementById('file').addEventListener('change',e=>{
   if(!CV_READY){showError('Engine still loading — try again in a moment.');return;}
   const img=new Image();
   img.onload=()=>{
-    const maxSide=2400; let w=img.naturalWidth,h=img.naturalHeight;
+    const maxSide=4000; let w=img.naturalWidth,h=img.naturalHeight;
     const sc=Math.min(1,maxSide/Math.max(w,h)); w=Math.round(w*sc);h=Math.round(h*sc);
     const c=document.getElementById('work'); c.width=w;c.height=h;
     c.getContext('2d',{willReadFrequently:true}).drawImage(img,0,0,w,h);
