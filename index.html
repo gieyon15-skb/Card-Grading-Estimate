@@ -107,7 +107,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v6</div>
+    <div class="ver">v7</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -291,6 +291,34 @@ function warpCard(src,corners){
   srcTri.delete();dstTri.delete();M.delete();
   return warped;
 }
+function pctile(arr,p){const s=Array.prototype.slice.call(arr).sort((a,b)=>a-b);
+  const idx=p*(s.length-1),lo=Math.floor(idx),hi=Math.ceil(idx);
+  return lo===hi?s[lo]:s[lo]+(s[hi]-s[lo])*(idx-lo);}
+// Find the frame->art edge in a 1-D edge-energy profile by locating the OUTERMOST
+// sustained rise from the plain frame into the busy art. This avoids latching onto
+// brighter INTERNAL edges (title bars, text) that sit deeper in. If the detected rise
+// is suspiciously shallow (<0.8mm, e.g. card-edge/background bleed) we report low
+// confidence and the caller keeps the simple strongest-edge behavior.
+function frameAnchor(prof,lo,hi,pxmm){
+  const sm=smoothNp(Array.prototype.slice.call(prof,lo,hi),5);
+  const m=sm.length; let am=0,av=-Infinity;
+  for(let i=0;i<m;i++) if(sm[i]>av){av=sm[i];am=i;} am+=lo;
+  if(m<8) return {idx:am,conf:false};
+  const win=Math.max(6,Math.round(0.25*pxmm)), wmLen=Math.max(1,m-win);
+  const wm=new Float64Array(wmLen);
+  for(let i=0;i<wmLen;i++){let s=0;for(let u=i;u<i+win;u++)s+=sm[u];wm[i]=s/win;}
+  const front=Math.max(3,Math.floor(wmLen/3));
+  const base=pctile(wm.slice(0,front),0.25), hiE=pctile(wm,0.90);
+  const thr=base+0.45*(hiE-base); let st=am;
+  for(let i=0;i<wmLen;i++){
+    if(wm[i]>=thr){let s=0;for(let u=i;u<i+win;u++)s+=sm[u];
+      if(s/win>=thr){let bi=i,bv=-Infinity;
+        for(let u=i;u<Math.min(i+win,m);u++) if(sm[u]>bv){bv=sm[u];bi=u;}
+        st=lo+bi; break;}}
+  }
+  if((st-lo)<0.8*pxmm) return {idx:am,conf:false};
+  return {idx:st,conf:true};
+}
 function measureBorders(warped){
   const gray=new cv.Mat(); cv.cvtColor(warped,gray,cv.COLOR_RGBA2GRAY);
   const grayF=new cv.Mat(); gray.convertTo(grayF,cv.CV_32F);
@@ -304,6 +332,18 @@ function measureBorders(warped){
   const lk_h=Math.max(Math.round(H*0.055),SKIP+10);
   const lk_w=Math.max(Math.round(W*0.065),SKIP+10);
   const NS=25,lPts=[],rPts=[],tPts=[],bPts=[];
+  // Top/bottom anchors (frame->art) from the averaged edge profile, so internal text
+  // bars don't get mistaken for the border. Left/right are left as-is (already robust).
+  const c0=Math.floor(W*0.12),c1=Math.floor(W*0.88);
+  const profTB=new Float64Array(H);
+  for(let r=0;r<H;r++){let s=0;for(let c=c0;c<c1;c++)s+=Math.abs(sy[r*W+c]);profTB[r]=s/(c1-c0);}
+  const profTBrev=new Float64Array(H); for(let k=0;k<H;k++)profTBrev[k]=profTB[H-1-k];
+  const aT=frameAnchor(profTB,SKIP,lk_h,PX_MM_H);
+  const aBr=frameAnchor(profTBrev,SKIP,lk_h,PX_MM_H);
+  const Ta=aT.idx, confT=aT.conf, Ba=H-1-aBr.idx, confB=aBr.conf;
+  const WINh=Math.round(0.45*PX_MM_H);
+  const tLo=confT?Math.max(SKIP,Ta-WINh):SKIP, tHi=confT?Math.min(lk_h,Ta+WINh):lk_h;
+  const bLo=confB?Math.max(H-lk_h,Ba-WINh):H-lk_h, bHi=confB?Math.min(H-SKIP,Ba+WINh):H-SKIP;
   for(let i=0;i<NS;i++){
     const y=Math.round(H*0.1+(H*0.8)*i/(NS-1));
     const yMin=Math.max(0,y-1),yMax=Math.min(H,y+2),nr=yMax-yMin;
@@ -317,8 +357,8 @@ function measureBorders(warped){
     const xMin=Math.max(0,x-1),xMax=Math.min(W,x+2),nc=xMax-xMin;
     const prof=new Float64Array(H);
     for(let r=0;r<H;r++){let s=0;for(let c=xMin;c<xMax;c++)s+=Math.abs(sy[r*W+c]);prof[r]=s/nc;}
-    tPts.push([x,peakAt(prof,SKIP,lk_h)]);
-    bPts.push([x,peakAt(prof,H-lk_h,H-SKIP)]);
+    tPts.push([x,peakAt(prof,tLo,tHi)]);
+    bPts.push([x,peakAt(prof,bLo,bHi)]);
   }
   const l_fit=ransacLine(lPts,true,3.0),r_fit=ransacLine(rPts,true,3.0),
         t_fit=ransacLine(tPts,false,3.0),b_fit=ransacLine(bPts,false,3.0);
