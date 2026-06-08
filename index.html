@@ -31,6 +31,8 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   background:linear-gradient(180deg,#fff,#9fb8c4);-webkit-background-clip:text;
   background-clip:text;-webkit-text-fill-color:transparent}
 .sub{color:var(--muted);font-size:12px;letter-spacing:.18em;text-transform:uppercase;margin-top:8px}
+.ver{display:inline-block;margin-top:10px;font-size:11px;font-weight:700;letter-spacing:.1em;
+  color:var(--cyan);border:1px solid var(--line);border-radius:20px;padding:3px 12px}
 
 .drop{
   display:block;width:100%;
@@ -104,6 +106,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
+    <div class="ver">v5</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -332,8 +335,11 @@ function diagXY(name,t,n){
   return[n-1-t,n-1-t];
 }
 function cornerSetback(prof,n){
-  // Geometric corner rounding only: how far in from the ideal tip until real card
-  // begins. Whitening/wear is NOT measured (physical condition is assumed perfect).
+  // Geometric corner rounding only. Conservative: a corner is only flagged as rounded
+  // when its tip is GENUINELY dark background (the corner is cut/rounded against the dark
+  // mat) AND the rise back to card brightness sits in a plausible band. Holographic foil,
+  // busy art, and loose detection produce ambiguous reads, which are treated as sharp
+  // (wear/physical condition is assumed perfect, so we never invent damage).
   let cs=0,cc=0; const ia=Math.floor(n*0.55),ib=Math.floor(n*0.95);
   for(let t=ia;t<ib;t++){cs+=prof[t];cc++;}
   const cardRef=cc?cs/cc:prof[n-1];
@@ -341,8 +347,16 @@ function cornerSetback(prof,n){
   for(let t=0;t<tnn;t++){ts+=prof[t];tc++;}
   const tipVal=tc?ts/tc:prof[0];
   const contrast=cardRef-tipVal; const look=Math.floor(n*0.5); let setback=0;
-  if(contrast>18){ const thr=tipVal+0.5*contrast; setback=look;
-    for(let t=0;t<look;t++){ if(prof[t]>=thr){ setback=t; break; } } }
+  if(contrast>25 && tipVal<50){
+    const thr=tipVal+0.5*contrast; let rise=-1;
+    for(let t=0;t<look;t++){
+      if(prof[t]>=thr){
+        let s=0,k=0; for(let u=t;u<Math.min(t+8,n);u++){s+=prof[u];k++;}
+        if(k && s/k>=thr){ rise=t; break; }
+      }
+    }
+    if(rise>6 && rise<=35) setback=rise;
+  }
   return setback;
 }
 // BGS: strict, half-point corner sub-grade (a small rounding drops it quickly)
@@ -542,7 +556,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
       </div>
     </div>
     <div class="section"><h2>Submission Strategy</h2><div class="picks">${picks}</div></div>
-    <div class="foot">Centering and corner <i>sharpness</i> (rounding) are measured. Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. BGS and TAG corners are scored on their own scales. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
+    <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
     <button class="again" id="again">Grade Another Card</button>`;
   res.style.display='block';
   renderCard(warped,borders,cen);
