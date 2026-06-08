@@ -107,7 +107,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v7</div>
+    <div class="ver">v8</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -625,7 +625,11 @@ function process(canvas){
       const det=detectCard(src);
       if(!det.corners){src.delete();setBusy(false);
         showError("Couldn't locate the card. Use a plain dark background, fill the frame with the whole card, and avoid glare or shadows.");return;}
-      const corners=refineCorners(src,det.corners);
+      // Corner refinement disabled: on foil full-art cards its perpendicular edge-scan
+      // latched onto the frame->art line / copyright text instead of the true card edge,
+      // cropping the silver frame and collapsing the top/bottom borders. The detected
+      // corners warp cleanly on their own.
+      const corners=det.corners;
       warped=warpCard(src,corners); src.delete(); src=null;
       const borders=measureBorders(warped);
       const cen=computeCentering(borders);
