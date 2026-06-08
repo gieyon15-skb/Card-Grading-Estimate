@@ -59,7 +59,8 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 .card-frame{background:var(--panel);border:1px solid var(--line);border-radius:16px;
   padding:14px;text-align:center}
 .card-frame .cap{font-size:11px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
-#card-canvas{max-width:100%;height:auto;border-radius:8px;display:inline-block}
+#card-canvas{max-width:100%;height:auto;border-radius:8px;display:inline-block;touch-action:none;cursor:grab}
+.adjust-hint{margin-top:8px;font-size:12px;color:#8b93a7;text-align:center;line-height:1.4}
 
 .section{margin-top:16px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 16px 18px}
 .section h2{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.05em;
@@ -107,7 +108,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v8</div>
+    <div class="ver">v9</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -517,51 +518,88 @@ function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);
   ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
-function renderCard(warped,borders,cen){
+let ADJ=null;  // manual border-adjustment state
+function drawLabel(ctx,txt,x,y,col){const w=ctx.measureText(txt).width+10;
+  ctx.fillStyle='rgba(8,8,16,.82)';roundRect(ctx,x-w/2,y-9,w,18,5);ctx.fill();
+  ctx.fillStyle=col;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(txt,x,y);}
+
+function bordersFromLines(){return {left:ADJ.lines.L,right:OUT_W-ADJ.lines.R,
+  top:ADJ.lines.T,bottom:OUT_H-ADJ.lines.B};}
+
+function redrawStage(){
+  const c=ADJ.canvas,ctx=c.getContext('2d'),{sxf,syf}=ADJ;
+  ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(ADJ.cardImg,0,0);
+  const cen=computeCentering(bordersFromLines());
+  ctx.strokeStyle='#ffd54a';ctx.lineWidth=1;ctx.strokeRect(.5,.5,c.width-1,c.height-1);
+  ctx.lineWidth=1.6;
+  const vx=(x,col)=>{ctx.strokeStyle=col;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,c.height);ctx.stroke();};
+  const hy=(y,col)=>{ctx.strokeStyle=col;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(c.width,y);ctx.stroke();};
+  vx(ADJ.lines.L*sxf,'#00e5ff'); vx(ADJ.lines.R*sxf,'#00e5ff');
+  hy(ADJ.lines.T*syf,'#ff4081'); hy(ADJ.lines.B*syf,'#ff4081');
+  const hand=(x,y,col)=>{ctx.fillStyle=col;roundRect(ctx,x-7,y-7,14,14,3);ctx.fill();
+    ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(x-3.5,y-1,7,2);ctx.fillRect(x-1,y-3.5,2,7);};
+  hand(ADJ.lines.L*sxf,c.height/2,'#00e5ff'); hand(ADJ.lines.R*sxf,c.height/2,'#00e5ff');
+  hand(c.width/2,ADJ.lines.T*syf,'#ff4081'); hand(c.width/2,ADJ.lines.B*syf,'#ff4081');
+  ctx.font='700 12px "JetBrains Mono",monospace';
+  drawLabel(ctx,cen.L_mm.toFixed(2)+'mm',40,c.height/2,'#00e5ff');
+  drawLabel(ctx,cen.R_mm.toFixed(2)+'mm',c.width-40,c.height/2,'#00e5ff');
+  drawLabel(ctx,cen.T_mm.toFixed(2)+'mm',c.width/2,16,'#ff4081');
+  drawLabel(ctx,cen.B_mm.toFixed(2)+'mm',c.width/2,c.height-16,'#ff4081');
+}
+
+function recomputeBody(){
+  const cen=computeCentering(bordersFromLines());
+  const gr=estimateGrades(cen,ADJ.cor);
+  const strat=evaluateStrategy(cen,ADJ.cor,gr);
+  document.getElementById('report-body').innerHTML=buildBodyHTML(cen,ADJ.cor,gr,strat);
+}
+
+function setupDrag(){
+  const c=ADJ.canvas; let active=null;
+  const toCanvas=e=>{const r=c.getBoundingClientRect();
+    return {x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)};};
+  const pick=p=>{const {sxf,syf}=ADJ,TOL=18;
+    const cand=[['L',Math.abs(p.x-ADJ.lines.L*sxf)],['R',Math.abs(p.x-ADJ.lines.R*sxf)],
+                ['T',Math.abs(p.y-ADJ.lines.T*syf)],['B',Math.abs(p.y-ADJ.lines.B*syf)]];
+    cand.sort((a,b)=>a[1]-b[1]); return cand[0][1]<=TOL?cand[0][0]:null;};
+  c.addEventListener('pointerdown',e=>{const k=pick(toCanvas(e));
+    if(k){active=k;c.setPointerCapture(e.pointerId);c.style.cursor='grabbing';e.preventDefault();}});
+  c.addEventListener('pointermove',e=>{const p=toCanvas(e);
+    if(!active){c.style.cursor=pick(p)?'grab':'default';return;}
+    const {sxf,syf}=ADJ;
+    if(active==='L')ADJ.lines.L=Math.max(3,Math.min(p.x/sxf,ADJ.lines.R-24));
+    else if(active==='R')ADJ.lines.R=Math.min(OUT_W-3,Math.max(p.x/sxf,ADJ.lines.L+24));
+    else if(active==='T')ADJ.lines.T=Math.max(3,Math.min(p.y/syf,ADJ.lines.B-24));
+    else if(active==='B')ADJ.lines.B=Math.min(OUT_H-3,Math.max(p.y/syf,ADJ.lines.T+24));
+    redrawStage(); e.preventDefault();});
+  const end=()=>{if(active){active=null;c.style.cursor='grab';recomputeBody();}};
+  c.addEventListener('pointerup',end); c.addEventListener('pointercancel',end);
+}
+
+function setupStage(warped,borders,cor){
   const dispW=600,dispH=Math.round(dispW*OUT_H/OUT_W);
   const small=new cv.Mat(); cv.resize(warped,small,new cv.Size(dispW,dispH));
   const canvas=document.getElementById('card-canvas');
   cv.imshow(canvas,small); small.delete();
-  const ctx=canvas.getContext('2d');
-  const sxf=dispW/OUT_W,syf=dispH/OUT_H;
-  ctx.strokeStyle='#ffd54a'; ctx.lineWidth=1; ctx.strokeRect(.5,.5,dispW-1,dispH-1);
-  ctx.lineWidth=1.2;
-  const vline=(fit,col)=>{ctx.strokeStyle=col;ctx.beginPath();
-    ctx.moveTo(polyval(fit,0)*sxf,0);ctx.lineTo(polyval(fit,OUT_H)*sxf,dispH);ctx.stroke();};
-  const hline=(fit,col)=>{ctx.strokeStyle=col;ctx.beginPath();
-    ctx.moveTo(0,polyval(fit,0)*syf);ctx.lineTo(dispW,polyval(fit,OUT_W)*syf);ctx.stroke();};
-  vline(borders.l_fit,'#00e5ff'); vline(borders.r_fit,'#00e5ff');
-  hline(borders.t_fit,'#ff4081'); hline(borders.b_fit,'#ff4081');
-  ctx.font='700 12px "JetBrains Mono",monospace';
-  const label=(txt,x,y,col)=>{const w=ctx.measureText(txt).width+10;
-    ctx.fillStyle='rgba(8,8,16,.82)';roundRect(ctx,x-w/2,y-9,w,18,5);ctx.fill();
-    ctx.fillStyle=col;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(txt,x,y);};
-  label(cen.L_mm.toFixed(2)+'mm',38,dispH/2,'#00e5ff');
-  label(cen.R_mm.toFixed(2)+'mm',dispW-38,dispH/2,'#00e5ff');
-  label(cen.T_mm.toFixed(2)+'mm',dispW/2,16,'#ff4081');
-  label(cen.B_mm.toFixed(2)+'mm',dispW/2,dispH-16,'#ff4081');
+  const off=document.createElement('canvas'); off.width=dispW; off.height=dispH;
+  off.getContext('2d').drawImage(canvas,0,0);
+  ADJ={canvas,cardImg:off,sxf:dispW/OUT_W,syf:dispH/OUT_H,cor,
+    lines:{L:borders.left,R:OUT_W-borders.right,T:borders.top,B:OUT_H-borders.bottom}};
+  setupDrag(); redrawStage();
 }
 
-const VBADGE={'TOP PICK':'#40e0d0','STRONG OPTION':'#ffd700','GOOD OPTION':'#ffd700',
-  'CONSIDER':'#40e0d0','VIABLE':'#c0c0c0','MODERATE RISK':'#ffaa00','HIGH RISK':'#ff6b35',
-  'LOWER PRIORITY':'#888c94','SKIP':'#888c94'};
-const RANK_NUM={1:'①',2:'②',3:'③'};
-
-function renderReport(warped,borders,cen,cor,gr,strategy){
-  const res=document.getElementById('result');
+function buildBodyHTML(cen,cor,gr,strategy){
   const lrDir=cen.L_pct>=cen.R_pct?'L':'R', tbDir=cen.T_pct>=cen.B_pct?'T':'B';
   const lrHi=Math.max(cen.L_pct,cen.R_pct).toFixed(1),lrLo=Math.min(cen.L_pct,cen.R_pct).toFixed(1);
   const tbHi=Math.max(cen.T_pct,cen.B_pct).toFixed(1),tbLo=Math.min(cen.T_pct,cen.B_pct).toFixed(1);
-  const mmv=[cen.L_mm,cen.R_mm,cen.T_mm,cen.B_mm];
-  const maxMM=Math.max(...mmv)*1.15;
-  const barCols=['#00e5ff','#0093b0','#ff4081','#a30053'];
-  const barLab=['Left','Right','Top','Bottom'];
+  const mmv=[cen.L_mm,cen.R_mm,cen.T_mm,cen.B_mm]; const maxMM=Math.max(...mmv)*1.15;
+  const barCols=['#00e5ff','#0093b0','#ff4081','#a30053']; const barLab=['Left','Right','Top','Bottom'];
   let bars='';
   for(let i=0;i<4;i++){const pct=Math.max(4,(mmv[i]/maxMM)*100);
     bars+=`<div class="bar"><div class="val">${mmv[i].toFixed(2)}</div>
       <div class="col" style="height:${pct}%;background:${barCols[i]}"></div>
       <div class="lab">${barLab[i]}</div></div>`;}
-  const m=cor.metrics; const weak=cor.worst; const showWeak=m[weak].setback>0;
+  const m=cor.metrics,weak=cor.worst,showWeak=m[weak].setback>0;
   const cc=k=>`<div class="cc${(k===weak&&showWeak)?' weak':''}">
     <div class="cn">${k}</div>
     <div class="cm">${m[k].mm<=0.05?'Sharp':m[k].mm.toFixed(2)+' mm'}</div>
@@ -575,12 +613,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
       <span class="co" style="color:${p.vcolor}">${p.co}</span>
       <span class="vd" style="background:${bc}22;color:${bc}">${p.verdict}</span></div>
       ${p.lines.map(l=>`<div class="ln">${l}</div>`).join('')}</div>`;}
-
-  res.innerHTML=`
-    <div class="card-frame">
-      <div class="cap">Card Boundary &amp; Border Measurements</div>
-      <canvas id="card-canvas"></canvas>
-    </div>
+  return `
     <div class="section"><h2>Border Widths (mm)</h2><div class="bars">${bars}</div></div>
     <div class="section"><h2>Measurements</h2>
       <div class="metrics">
@@ -598,13 +631,30 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
         ${grade('BGS',gr.bgs_overall.toFixed(1),'Cent '+gr.bgs_cen.toFixed(1)+' · Corn '+gr.bgs_corner.toFixed(1),'#c8c8d4')}
       </div>
     </div>
-    <div class="section"><h2>Submission Strategy</h2><div class="picks">${picks}</div></div>
-    <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
+    <div class="section"><h2>Submission Strategy</h2><div class="picks">${picks}</div></div>`;
+}
+
+const VBADGE={'TOP PICK':'#40e0d0','STRONG OPTION':'#ffd700','GOOD OPTION':'#ffd700',
+  'CONSIDER':'#40e0d0','VIABLE':'#c0c0c0','MODERATE RISK':'#ffaa00','HIGH RISK':'#ff6b35',
+  'LOWER PRIORITY':'#888c94','SKIP':'#888c94'};
+const RANK_NUM={1:'①',2:'②',3:'③'};
+
+function renderReport(warped,borders,cen,cor,gr,strategy){
+  const res=document.getElementById('result');
+  res.innerHTML=`
+    <div class="card-frame">
+      <div class="cap">Card Boundary &amp; Border Measurements</div>
+      <canvas id="card-canvas"></canvas>
+      <div class="adjust-hint">Line not sitting on the border? Drag any line (or its handle) onto it — grades update when you let go.</div>
+    </div>
+    <div id="report-body"></div>
+    <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably, so check the lines and nudge them if needed. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
     <button class="again" id="again">Grade Another Card</button>`;
   res.style.display='block';
-  renderCard(warped,borders,cen);
+  setupStage(warped,borders,cor);
+  recomputeBody();
   document.getElementById('again').onclick=()=>{
-    res.style.display='none'; res.innerHTML='';
+    ADJ=null; res.style.display='none'; res.innerHTML='';
     document.getElementById('file').value='';
     setStatus(''); window.scrollTo({top:0,behavior:'smooth'});
   };
