@@ -61,6 +61,11 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 .card-frame .cap{font-size:11px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
 #card-canvas{max-width:100%;height:auto;border-radius:8px;display:inline-block;touch-action:none;cursor:grab}
 .adjust-hint{margin-top:8px;font-size:12px;color:#8b93a7;text-align:center;line-height:1.4}
+.stage-actions{margin-top:10px;text-align:center}
+#outline-controls{display:inline-flex;gap:8px}
+.mini{font:600 12px "JetBrains Mono",monospace;color:#0a0e1a;background:#40e0d0;border:none;
+  padding:7px 12px;border-radius:7px;cursor:pointer}
+.mini.ghost{background:transparent;color:#8b93a7;border:1px solid #2a3142}
 
 .section{margin-top:16px;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 16px 18px}
 .section h2{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.05em;
@@ -108,7 +113,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v9</div>
+    <div class="ver">v10</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -130,6 +135,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 /* ===================== Constants ===================== */
 const CARD_W_MM=63.0, CARD_H_MM=88.0, CARD_RATIO=CARD_H_MM/CARD_W_MM;
 const OUT_W=2520, OUT_H=3520;
+const MARGIN=Math.round(OUT_W*0.08), MW=OUT_W+2*MARGIN, MH=OUT_H+2*MARGIN;
 const PX_MM_W=OUT_W/CARD_W_MM, PX_MM_H=OUT_H/CARD_H_MM;
 const PSA_GRADES=[[55,10,"Gem Mint"],[60,9,"Mint"],[65,8,"NM-MT"],[70,7,"NM"],
   [75,6,"EX-MT"],[80,5,"EX"],[85,4,"VG-EX"],[100,3,"VG"]];
@@ -289,6 +295,21 @@ function warpCard(src,corners){
   const M=cv.getPerspectiveTransform(srcTri,dstTri);
   const warped=new cv.Mat();
   cv.warpPerspective(src,warped,M,new cv.Size(OUT_W,OUT_H));
+  srcTri.delete();dstTri.delete();M.delete();
+  return warped;
+}
+// Warp the card into an inset rectangle inside a larger canvas, leaving a MARGIN of the
+// surrounding photo on every side. This keeps the true card edge VISIBLE inside the view
+// (instead of pinned to the image edge), so the card-edge lines can be dragged onto it —
+// recovering any card the detector cropped, and re-anchoring corners to the real edge.
+function warpCardMargin(src,corners){
+  const [tl,tr,br,bl]=orderPoints(corners);
+  const a=MARGIN, x1=a, y1=a, x2=a+OUT_W-1, y2=a+OUT_H-1;
+  const srcTri=cv.matFromArray(4,1,cv.CV_32FC2,[tl[0],tl[1],tr[0],tr[1],br[0],br[1],bl[0],bl[1]]);
+  const dstTri=cv.matFromArray(4,1,cv.CV_32FC2,[x1,y1,x2,y1,x2,y2,x1,y2]);
+  const M=cv.getPerspectiveTransform(srcTri,dstTri);
+  const warped=new cv.Mat();
+  cv.warpPerspective(src,warped,M,new cv.Size(MW,MH));
   srcTri.delete();dstTri.delete();M.delete();
   return warped;
 }
@@ -518,73 +539,109 @@ function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);
   ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);
   ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
-let ADJ=null;  // manual border-adjustment state
+let ADJ=null;  // manual adjustment state (card-edge + print-border lines, in margin-warp px)
 function drawLabel(ctx,txt,x,y,col){const w=ctx.measureText(txt).width+10;
-  ctx.fillStyle='rgba(8,8,16,.82)';roundRect(ctx,x-w/2,y-9,w,18,5);ctx.fill();
+  ctx.fillStyle='rgba(8,8,16,.85)';roundRect(ctx,x-w/2,y-9,w,18,5);ctx.fill();
   ctx.fillStyle=col;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(txt,x,y);}
 
-function bordersFromLines(){return {left:ADJ.lines.L,right:OUT_W-ADJ.lines.R,
-  top:ADJ.lines.T,bottom:OUT_H-ADJ.lines.B};}
+// Centering from the gap between each card-EDGE line (outer) and PRINT-border line (inner).
+// The outer lines also calibrate the mm scale (card is 63x88mm), so moving an edge line
+// rescales every measurement correctly.
+function computeCenteringGap(){
+  const o=ADJ.outer,i=ADJ.inner;
+  const cardW=Math.max(o.R-o.L,1),cardH=Math.max(o.B-o.T,1);
+  const pxx=cardW/CARD_W_MM,pyy=cardH/CARD_H_MM;
+  const L=Math.max(0,i.L-o.L),R=Math.max(0,o.R-i.R),T=Math.max(0,i.T-o.T),B=Math.max(0,o.B-i.B);
+  const lr=Math.max(L+R,1),tb=Math.max(T+B,1);
+  return {L,R,T,B,L_mm:L/pxx,R_mm:R/pxx,T_mm:T/pyy,B_mm:B/pyy,
+    L_pct:L/lr*100,R_pct:R/lr*100,T_pct:T/tb*100,B_pct:B/tb*100,
+    lr_off:Math.max(L,R)/lr*100,tb_off:Math.max(T,B)/tb*100};
+}
 
 function redrawStage(){
   const c=ADJ.canvas,ctx=c.getContext('2d'),{sxf,syf}=ADJ;
   ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(ADJ.cardImg,0,0);
-  const cen=computeCentering(bordersFromLines());
-  ctx.strokeStyle='#ffd54a';ctx.lineWidth=1;ctx.strokeRect(.5,.5,c.width-1,c.height-1);
-  ctx.lineWidth=1.6;
-  const vx=(x,col)=>{ctx.strokeStyle=col;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,c.height);ctx.stroke();};
-  const hy=(y,col)=>{ctx.strokeStyle=col;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(c.width,y);ctx.stroke();};
-  vx(ADJ.lines.L*sxf,'#00e5ff'); vx(ADJ.lines.R*sxf,'#00e5ff');
-  hy(ADJ.lines.T*syf,'#ff4081'); hy(ADJ.lines.B*syf,'#ff4081');
+  const cen=computeCenteringGap();
+  const vx=(x,col,w)=>{ctx.strokeStyle=col;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,c.height);ctx.stroke();};
+  const hy=(y,col,w)=>{ctx.strokeStyle=col;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(c.width,y);ctx.stroke();};
+  vx(ADJ.outer.L*sxf,'#ffd54a',1.5); vx(ADJ.outer.R*sxf,'#ffd54a',1.5);
+  hy(ADJ.outer.T*syf,'#ffd54a',1.5); hy(ADJ.outer.B*syf,'#ffd54a',1.5);
+  vx(ADJ.inner.L*sxf,'#00e5ff',1.6); vx(ADJ.inner.R*sxf,'#00e5ff',1.6);
+  hy(ADJ.inner.T*syf,'#ff4081',1.6); hy(ADJ.inner.B*syf,'#ff4081',1.6);
   const hand=(x,y,col)=>{ctx.fillStyle=col;roundRect(ctx,x-7,y-7,14,14,3);ctx.fill();
     ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(x-3.5,y-1,7,2);ctx.fillRect(x-1,y-3.5,2,7);};
-  hand(ADJ.lines.L*sxf,c.height/2,'#00e5ff'); hand(ADJ.lines.R*sxf,c.height/2,'#00e5ff');
-  hand(c.width/2,ADJ.lines.T*syf,'#ff4081'); hand(c.width/2,ADJ.lines.B*syf,'#ff4081');
+  const H=c.height,W=c.width;
+  hand(ADJ.outer.L*sxf,H*0.25,'#ffd54a'); hand(ADJ.outer.R*sxf,H*0.25,'#ffd54a');
+  hand(W*0.25,ADJ.outer.T*syf,'#ffd54a'); hand(W*0.25,ADJ.outer.B*syf,'#ffd54a');
+  hand(ADJ.inner.L*sxf,H*0.5,'#00e5ff'); hand(ADJ.inner.R*sxf,H*0.5,'#00e5ff');
+  hand(W*0.5,ADJ.inner.T*syf,'#ff4081'); hand(W*0.5,ADJ.inner.B*syf,'#ff4081');
   ctx.font='700 12px "JetBrains Mono",monospace';
-  drawLabel(ctx,cen.L_mm.toFixed(2)+'mm',40,c.height/2,'#00e5ff');
-  drawLabel(ctx,cen.R_mm.toFixed(2)+'mm',c.width-40,c.height/2,'#00e5ff');
-  drawLabel(ctx,cen.T_mm.toFixed(2)+'mm',c.width/2,16,'#ff4081');
-  drawLabel(ctx,cen.B_mm.toFixed(2)+'mm',c.width/2,c.height-16,'#ff4081');
+  drawLabel(ctx,cen.L_mm.toFixed(2),(ADJ.outer.L+ADJ.inner.L)/2*sxf,H*0.5,'#00e5ff');
+  drawLabel(ctx,cen.R_mm.toFixed(2),(ADJ.outer.R+ADJ.inner.R)/2*sxf,H*0.5,'#00e5ff');
+  drawLabel(ctx,cen.T_mm.toFixed(2),W*0.5,(ADJ.outer.T+ADJ.inner.T)/2*syf,'#ff4081');
+  drawLabel(ctx,cen.B_mm.toFixed(2),W*0.5,(ADJ.outer.B+ADJ.inner.B)/2*syf,'#ff4081');
 }
 
 function recomputeBody(){
-  const cen=computeCentering(bordersFromLines());
+  const cen=computeCenteringGap();
   const gr=estimateGrades(cen,ADJ.cor);
   const strat=evaluateStrategy(cen,ADJ.cor,gr);
   document.getElementById('report-body').innerHTML=buildBodyHTML(cen,ADJ.cor,gr,strat);
+}
+
+// Re-crop the card rectangle the edge lines define, rescale to OUT_WxOUT_H, re-measure
+// corners there. Wrapped so a cv hiccup can never break the report.
+function reassessCorners(){
+  try{
+    const o=ADJ.outer;
+    const x=Math.round(o.L),y=Math.round(o.T),w=Math.round(o.R-o.L),h=Math.round(o.B-o.T);
+    if(w<40||h<40||x<0||y<0||x+w>MW||y+h>MH)return;
+    const roi=ADJ.mwarp.roi(new cv.Rect(x,y,w,h));
+    const rs=new cv.Mat(); cv.resize(roi,rs,new cv.Size(OUT_W,OUT_H));
+    ADJ.cor=assessCorners(rs); roi.delete(); rs.delete();
+  }catch(e){console.warn('corner reassess failed',e);}
 }
 
 function setupDrag(){
   const c=ADJ.canvas; let active=null;
   const toCanvas=e=>{const r=c.getBoundingClientRect();
     return {x:(e.clientX-r.left)*(c.width/r.width),y:(e.clientY-r.top)*(c.height/r.height)};};
-  const pick=p=>{const {sxf,syf}=ADJ,TOL=18;
-    const cand=[['L',Math.abs(p.x-ADJ.lines.L*sxf)],['R',Math.abs(p.x-ADJ.lines.R*sxf)],
-                ['T',Math.abs(p.y-ADJ.lines.T*syf)],['B',Math.abs(p.y-ADJ.lines.B*syf)]];
+  const pick=p=>{const {sxf,syf}=ADJ,TOL=16;
+    const cand=[['oL',Math.abs(p.x-ADJ.outer.L*sxf)],['oR',Math.abs(p.x-ADJ.outer.R*sxf)],
+                ['oT',Math.abs(p.y-ADJ.outer.T*syf)],['oB',Math.abs(p.y-ADJ.outer.B*syf)],
+                ['iL',Math.abs(p.x-ADJ.inner.L*sxf)],['iR',Math.abs(p.x-ADJ.inner.R*sxf)],
+                ['iT',Math.abs(p.y-ADJ.inner.T*syf)],['iB',Math.abs(p.y-ADJ.inner.B*syf)]];
     cand.sort((a,b)=>a[1]-b[1]); return cand[0][1]<=TOL?cand[0][0]:null;};
   c.addEventListener('pointerdown',e=>{const k=pick(toCanvas(e));
     if(k){active=k;c.setPointerCapture(e.pointerId);c.style.cursor='grabbing';e.preventDefault();}});
   c.addEventListener('pointermove',e=>{const p=toCanvas(e);
     if(!active){c.style.cursor=pick(p)?'grab':'default';return;}
-    const {sxf,syf}=ADJ;
-    if(active==='L')ADJ.lines.L=Math.max(3,Math.min(p.x/sxf,ADJ.lines.R-24));
-    else if(active==='R')ADJ.lines.R=Math.min(OUT_W-3,Math.max(p.x/sxf,ADJ.lines.L+24));
-    else if(active==='T')ADJ.lines.T=Math.max(3,Math.min(p.y/syf,ADJ.lines.B-24));
-    else if(active==='B')ADJ.lines.B=Math.min(OUT_H-3,Math.max(p.y/syf,ADJ.lines.T+24));
+    const {sxf,syf}=ADJ,o=ADJ.outer,i=ADJ.inner,G=8;
+    if(active==='oL')o.L=Math.max(3,Math.min(p.x/sxf,i.L-G));
+    else if(active==='oR')o.R=Math.min(MW-3,Math.max(p.x/sxf,i.R+G));
+    else if(active==='oT')o.T=Math.max(3,Math.min(p.y/syf,i.T-G));
+    else if(active==='oB')o.B=Math.min(MH-3,Math.max(p.y/syf,i.B+G));
+    else if(active==='iL')i.L=Math.max(o.L+G,Math.min(p.x/sxf,i.R-G));
+    else if(active==='iR')i.R=Math.min(o.R-G,Math.max(p.x/sxf,i.L+G));
+    else if(active==='iT')i.T=Math.max(o.T+G,Math.min(p.y/syf,i.B-G));
+    else if(active==='iB')i.B=Math.min(o.B-G,Math.max(p.y/syf,i.T+G));
     redrawStage(); e.preventDefault();});
-  const end=()=>{if(active){active=null;c.style.cursor='grab';recomputeBody();}};
+  const end=()=>{if(active!==null){const wasOuter=active[0]==='o';active=null;
+    c.style.cursor='grab'; if(wasOuter)reassessCorners(); recomputeBody();}};
   c.addEventListener('pointerup',end); c.addEventListener('pointercancel',end);
 }
 
-function setupStage(warped,borders,cor){
-  const dispW=600,dispH=Math.round(dispW*OUT_H/OUT_W);
-  const small=new cv.Mat(); cv.resize(warped,small,new cv.Size(dispW,dispH));
+function setupStage(mwarp,borders,cor){
+  const dispW=600,dispH=Math.round(dispW*MH/MW);
+  const small=new cv.Mat(); cv.resize(mwarp,small,new cv.Size(dispW,dispH));
   const canvas=document.getElementById('card-canvas');
   cv.imshow(canvas,small); small.delete();
   const off=document.createElement('canvas'); off.width=dispW; off.height=dispH;
   off.getContext('2d').drawImage(canvas,0,0);
-  ADJ={canvas,cardImg:off,sxf:dispW/OUT_W,syf:dispH/OUT_H,cor,
-    lines:{L:borders.left,R:OUT_W-borders.right,T:borders.top,B:OUT_H-borders.bottom}};
+  const a=MARGIN;
+  ADJ={canvas,cardImg:off,mwarp,cor,sxf:dispW/MW,syf:dispH/MH,
+    outer:{L:a,R:a+OUT_W,T:a,B:a+OUT_H},
+    inner:{L:a+borders.left,R:a+OUT_W-borders.right,T:a+borders.top,B:a+OUT_H-borders.bottom}};
   setupDrag(); redrawStage();
 }
 
@@ -645,7 +702,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
     <div class="card-frame">
       <div class="cap">Card Boundary &amp; Border Measurements</div>
       <canvas id="card-canvas"></canvas>
-      <div class="adjust-hint">Line not sitting on the border? Drag any line (or its handle) onto it — grades update when you let go.</div>
+      <div class="adjust-hint"><b style="color:#ffd54a">Gold</b> = card edge · <b style="color:#00e5ff">cyan</b>/<b style="color:#ff4081">pink</b> = print border. Drag any line onto where it belongs — corners and grades update when you release.</div>
     </div>
     <div id="report-body"></div>
     <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably, so check the lines and nudge them if needed. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
@@ -654,7 +711,8 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
   setupStage(warped,borders,cor);
   recomputeBody();
   document.getElementById('again').onclick=()=>{
-    ADJ=null; res.style.display='none'; res.innerHTML='';
+    if(ADJ&&ADJ.mwarp){try{ADJ.mwarp.delete();}catch(e){}} ADJ=null;
+    res.style.display='none'; res.innerHTML='';
     document.getElementById('file').value='';
     setStatus(''); window.scrollTo({top:0,behavior:'smooth'});
   };
@@ -680,18 +738,23 @@ function process(canvas){
       // cropping the silver frame and collapsing the top/bottom borders. The detected
       // corners warp cleanly on their own.
       const corners=det.corners;
-      warped=warpCard(src,corners); src.delete(); src=null;
-      const borders=measureBorders(warped);
+      const mwarp=warpCardMargin(src,corners); src.delete(); src=null;
+      // tight card crop (the inset rect) for the initial auto border + corner read
+      const card0=mwarp.roi(new cv.Rect(MARGIN,MARGIN,OUT_W,OUT_H)).clone();
+      const borders=measureBorders(card0);
+      const cor=assessCorners(card0);
+      card0.delete();
       const cen=computeCentering(borders);
-      const cor=assessCorners(warped);
       const gr=estimateGrades(cen,cor);
       const strat=evaluateStrategy(cen,cor,gr);
       setStatus(''); setBusy(false);
-      renderReport(warped,borders,cen,cor,gr,strat);
-      warped.delete(); warped=null;
+      renderReport(mwarp,borders,cen,cor,gr,strat);
+      // NOTE: mwarp is kept alive in ADJ for re-cropping on edge-line drags;
+      // it is released in the "Grade Another Card" handler.
     }catch(err){
       if(src)try{src.delete();}catch(e){}
       if(warped)try{warped.delete();}catch(e){}
+      if(ADJ&&ADJ.mwarp){try{ADJ.mwarp.delete();}catch(e){} ADJ=null;}
       setBusy(false); showError('Analysis error: '+(err&&err.message?err.message:err));
       console.error(err);
     }
