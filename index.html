@@ -114,7 +114,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v11</div>
+    <div class="ver">v12</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -562,6 +562,12 @@ function computeCenteringGap(){
 function redrawStage(){
   const c=ADJ.canvas,ctx=c.getContext('2d'),{sxf,syf}=ADJ;
   ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(ADJ.cardImg,0,0);
+  // center guides: the middle of each edge — the correct place to line each border up
+  const ccx=(ADJ.outer.L+ADJ.outer.R)/2*sxf, ccy=(ADJ.outer.T+ADJ.outer.B)/2*syf;
+  ctx.strokeStyle='rgba(255,255,255,0.30)';ctx.lineWidth=1;ctx.setLineDash([4,6]);
+  ctx.beginPath();ctx.moveTo(ccx,ADJ.outer.T*syf);ctx.lineTo(ccx,ADJ.outer.B*syf);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(ADJ.outer.L*sxf,ccy);ctx.lineTo(ADJ.outer.R*sxf,ccy);ctx.stroke();
+  ctx.setLineDash([]);
   const cen=computeCenteringGap();
   const vx=(x,col,w)=>{ctx.strokeStyle=col;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,c.height);ctx.stroke();};
   const hy=(y,col,w)=>{ctx.strokeStyle=col;ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(c.width,y);ctx.stroke();};
@@ -719,7 +725,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
     <div class="card-frame">
       <div class="cap">Card Boundary &amp; Border Measurements</div>
       <canvas id="card-canvas"></canvas>
-      <div class="adjust-hint"><b style="color:#ffd54a">Gold</b> = card edge · <b style="color:#00e5ff">cyan</b>/<b style="color:#ff4081">pink</b> = print border. Drag any line onto where it belongs — corners and grades update when you release. Dashed boxes show where corners are graded.</div>
+      <div class="adjust-hint"><b style="color:#ffd54a">Gold</b> = card edge · <b style="color:#00e5ff">cyan</b>/<b style="color:#ff4081">pink</b> = print border. Drag any line onto where it belongs — corners and grades update when you release. Dashed boxes = corner zones; faint center lines mark the middle of each edge — line each border up there.</div>
     </div>
     <div id="report-body"></div>
     <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably, so check the lines and nudge them if needed. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
