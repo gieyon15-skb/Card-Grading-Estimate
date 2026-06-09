@@ -61,6 +61,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 .card-frame .cap{font-size:11px;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
 #card-canvas{max-width:100%;height:auto;border-radius:8px;display:inline-block;touch-action:none;cursor:grab}
 .adjust-hint{margin-top:8px;font-size:12px;color:#8b93a7;text-align:center;line-height:1.4}
+.warn-banner{background:rgba(255,138,0,.14);border:1px solid rgba(255,138,0,.5);color:#ffb86b;padding:12px 14px;border-radius:10px;margin-bottom:14px;font-size:13px;line-height:1.5}
 .stage-actions{margin-top:10px;text-align:center}
 #outline-controls{display:inline-flex;gap:8px}
 .mini{font:600 12px "JetBrains Mono",monospace;color:#0a0e1a;background:#40e0d0;border:none;
@@ -113,7 +114,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v10</div>
+    <div class="ver">v11</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -580,13 +581,29 @@ function redrawStage(){
   drawLabel(ctx,cen.R_mm.toFixed(2),(ADJ.outer.R+ADJ.inner.R)/2*sxf,H*0.5,'#00e5ff');
   drawLabel(ctx,cen.T_mm.toFixed(2),W*0.5,(ADJ.outer.T+ADJ.inner.T)/2*syf,'#ff4081');
   drawLabel(ctx,cen.B_mm.toFixed(2),W*0.5,(ADJ.outer.B+ADJ.inner.B)/2*syf,'#ff4081');
+  // corner-assessment zones (where corners are graded) — they track the gold edge lines
+  const cardW=ADJ.outer.R-ADJ.outer.L,cardH=ADJ.outer.B-ADJ.outer.T;
+  const bw=0.07*cardW*sxf,bh=(0.07*OUT_W/OUT_H)*cardH*syf;
+  const oLx=ADJ.outer.L*sxf,oRx=ADJ.outer.R*sxf,oTy=ADJ.outer.T*syf,oBy=ADJ.outer.B*syf;
+  ctx.strokeStyle='rgba(255,255,255,0.55)';ctx.lineWidth=1.2;ctx.setLineDash([5,4]);
+  ctx.strokeRect(oLx,oTy,bw,bh); ctx.strokeRect(oRx-bw,oTy,bw,bh);
+  ctx.strokeRect(oLx,oBy-bh,bw,bh); ctx.strokeRect(oRx-bw,oBy-bh,bw,bh);
+  ctx.setLineDash([]);
 }
 
+function outlineWarning(cen){
+  const o=ADJ.outer, ratio=(o.R-o.L)/Math.max(o.B-o.T,1), target=CARD_W_MM/CARD_H_MM;
+  const aspectOff=Math.abs(ratio-target)/target>0.12;
+  const maxB=Math.max(cen.L_mm,cen.R_mm,cen.T_mm,cen.B_mm), tooBig=maxB>6;
+  if(!aspectOff&&!tooBig)return '';
+  const why=tooBig?`a ${maxB.toFixed(1)}mm border`:'the card shape looks off';
+  return `<div class="warn-banner">&#9888; Outline looks off (${why}). Put the <b style="color:#ffd54a">gold</b> lines on the card edge and the <b style="color:#00e5ff">color</b> lines on the print border — numbers below aren't reliable until then.</div>`;
+}
 function recomputeBody(){
   const cen=computeCenteringGap();
   const gr=estimateGrades(cen,ADJ.cor);
   const strat=evaluateStrategy(cen,ADJ.cor,gr);
-  document.getElementById('report-body').innerHTML=buildBodyHTML(cen,ADJ.cor,gr,strat);
+  document.getElementById('report-body').innerHTML=outlineWarning(cen)+buildBodyHTML(cen,ADJ.cor,gr,strat);
 }
 
 // Re-crop the card rectangle the edge lines define, rescale to OUT_WxOUT_H, re-measure
@@ -626,8 +643,8 @@ function setupDrag(){
     else if(active==='iT')i.T=Math.max(o.T+G,Math.min(p.y/syf,i.B-G));
     else if(active==='iB')i.B=Math.min(o.B-G,Math.max(p.y/syf,i.T+G));
     redrawStage(); e.preventDefault();});
-  const end=()=>{if(active!==null){const wasOuter=active[0]==='o';active=null;
-    c.style.cursor='grab'; if(wasOuter)reassessCorners(); recomputeBody();}};
+  const end=()=>{if(active!==null){active=null;
+    c.style.cursor='grab'; reassessCorners(); recomputeBody();}};
   c.addEventListener('pointerup',end); c.addEventListener('pointercancel',end);
 }
 
@@ -702,7 +719,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
     <div class="card-frame">
       <div class="cap">Card Boundary &amp; Border Measurements</div>
       <canvas id="card-canvas"></canvas>
-      <div class="adjust-hint"><b style="color:#ffd54a">Gold</b> = card edge · <b style="color:#00e5ff">cyan</b>/<b style="color:#ff4081">pink</b> = print border. Drag any line onto where it belongs — corners and grades update when you release.</div>
+      <div class="adjust-hint"><b style="color:#ffd54a">Gold</b> = card edge · <b style="color:#00e5ff">cyan</b>/<b style="color:#ff4081">pink</b> = print border. Drag any line onto where it belongs — corners and grades update when you release. Dashed boxes show where corners are graded.</div>
     </div>
     <div id="report-body"></div>
     <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably, so check the lines and nudge them if needed. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
