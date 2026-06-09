@@ -82,11 +82,9 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 .mrow{font-size:13px;line-height:1.6}
 .mrow .k{color:var(--muted);font-size:11px;letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:3px}
 .corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.corner-grid .cc{padding:11px 13px;background:var(--panel2);border-radius:10px;border:1px solid transparent}
-.corner-grid .cc.weak{border-color:var(--orange)}
-.corner-grid .cc .cn{color:var(--muted);font-size:11px;letter-spacing:.14em;font-weight:700}
-.corner-grid .cc .cm{font-size:17px;font-weight:700;margin:4px 0 5px;color:var(--text)}
-.corner-grid .cc .cs{color:#7d7d8c;font-size:12px}
+.corner-grid .cc{padding:8px;background:var(--panel2);border-radius:10px;border:1px solid transparent}
+.corner-grid .cc canvas{width:100%;height:auto;display:block;border-radius:7px;background:#0a0a14}
+.corner-grid .cc .cs{color:#9a9aa8;font-size:12px;text-align:center;margin-top:7px}
 
 .grades{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .grade{background:var(--panel2);border-radius:12px;padding:12px 10px;text-align:center;border-top:2px solid}
@@ -114,7 +112,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v14</div>
+    <div class="ver">v15</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -392,67 +390,87 @@ function measureBorders(warped){
   return {top:clamp(Tc,H),bottom:clamp(Bc,H),left:clamp(Lc,W),right:clamp(Rc,W),
     l_fit,r_fit,t_fit,b_fit};
 }
-function diagXY(name,t,n){
-  if(name==='TL')return[t,t];
-  if(name==='TR')return[n-1-t,t];
-  if(name==='BL')return[t,n-1-t];
-  return[n-1-t,n-1-t];
+/* ===================== Per-corner skew-robust assessment =====================
+   Each corner is detected in its OWN quadrant, anchored to the gold (edge) lines
+   but refined locally within a ±1mm band so the edges follow the card's tilt.
+   The two local edges define the virtual sharp-corner apex; the actual rounding is
+   ray-cast outward from the apex. A card that sits a little off-square no longer makes
+   one corner read better than its diagonal. Grade = how far the actual corner is set
+   back BEYOND the factory rounding. Geometry is also returned so the report can draw
+   each corner (ideal vs actual curvature). */
+const COR_DELTA=13, COR_SUS=6, RFAC_MM=3.3, FACTORY_BASE_MM=1.45;
+function _median(a){ if(!a.length)return 0; const b=a.slice().sort((x,y)=>x-y),n=b.length;
+  return n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2; }
+function _polyfit1(xs,ys){ const n=xs.length; let sx=0,sy=0,sxx=0,sxy=0;
+  for(let i=0;i<n;i++){sx+=xs[i];sy+=ys[i];sxx+=xs[i]*xs[i];sxy+=xs[i]*ys[i];}
+  const d=n*sxx-sx*sx; if(Math.abs(d)<1e-9)return [0,sy/n];
+  const m=(n*sxy-sx*sy)/d; return [m,(sy-m*sx)/n]; }
+function _robustFit(xs,ys){ if(xs.length<4)return null; let [m,b]=_polyfit1(xs,ys);
+  for(let it=0;it<3;it++){ const res=xs.map((x,i)=>Math.abs(ys[i]-(m*x+b))), med=_median(res)+1e-6, kx=[],ky=[];
+    for(let i=0;i<xs.length;i++) if(res[i]<2.5*med){kx.push(xs[i]);ky.push(ys[i]);}
+    if(kx.length<4)break; [m,b]=_polyfit1(kx,ky); } return [m,b]; }
+function _firstRise(getv,len,bg,lo,hi){ const thr=bg+COR_DELTA; lo=Math.max(0,lo);hi=Math.min(len,hi);
+  for(let t=lo;t<hi;t++){ if(t+COR_SUS>len)break;
+    if(getv(t)>=thr){ let s=0; for(let k=0;k<COR_SUS;k++)s+=getv(t+k); if(s/COR_SUS>=thr)return t; } }
+  return -1; }
+function cornerBgsExcess(ex){ if(ex<=0.12)return 10.0; if(ex<=0.30)return 9.5; if(ex<=0.55)return 9.0;
+  if(ex<=0.85)return 8.5; if(ex<=1.25)return 8.0; if(ex<=1.9)return 7.5; return 7.0; }
+function cornerTagExcess(ex){ return ex<=0.12?1000:Math.max(600,Math.round(1000-(ex-0.12)*240)); }
+function corColor(ex){ return ex<=0.12?'#37e0a0':ex<=0.45?'#ffd54a':ex<=0.9?'#ff9f40':'#ff5470'; }
+
+function analyzeCornerLocal(mwarp,name,outer){
+  const S=Math.round(0.17*OUT_W), out=Math.round(0.055*OUT_W), BAND=Math.round(1.0*PX_MM_W);
+  const cx=(name==='TL'||name==='BL')?outer.L:outer.R;
+  const cy=(name==='TL'||name==='TR')?outer.T:outer.B;
+  let x0=(name==='TL'||name==='BL')?cx-out:cx-(S-out);
+  let y0=(name==='TL'||name==='TR')?cy-out:cy-(S-out);
+  x0=Math.max(0,Math.min(Math.round(x0),MW-S)); y0=Math.max(0,Math.min(Math.round(y0),MH-S));
+  const fh=(name==='TR'||name==='BR'), fv=(name==='BL'||name==='BR');
+  const roi=mwarp.roi(new cv.Rect(x0,y0,S,S));
+  const work=new cv.Mat();
+  if(fh&&fv)cv.flip(roi,work,-1); else if(fh)cv.flip(roi,work,1); else if(fv)cv.flip(roi,work,0); else roi.copyTo(work);
+  roi.delete();
+  const gray=new cv.Mat(); cv.cvtColor(work,gray,cv.COLOR_RGBA2GRAY); work.delete();
+  const gb=new cv.Mat(); cv.GaussianBlur(gray,gb,new cv.Size(7,7),0); gray.delete();
+  const W=gb.cols,H=gb.rows,data=gb.data, gx=out, gy=out;
+  const colBg=x=>{let s=0;for(let y=0;y<8;y++)s+=data[y*W+x];return s/8;};
+  const rowBg=y=>{let s=0;for(let x=0;x<8;x++)s+=data[y*W+x];return s/8;};
+  const xs_t=[],ys_t=[];
+  for(let x=Math.round(gx+0.13*S);x<Math.round(W*0.93);x+=2){
+    const y=_firstRise(t=>data[t*W+x],H,colBg(x),gy-BAND,gy+BAND); if(y>=0){xs_t.push(x);ys_t.push(y);} }
+  const ys_l=[],xs_l=[];
+  for(let y=Math.round(gy+0.13*S);y<Math.round(H*0.93);y+=2){
+    const x=_firstRise(t=>data[y*W+t],W,rowBg(y),gx-BAND,gx+BAND); if(x>=0){ys_l.push(y);xs_l.push(x);} }
+  const ft=_robustFit(xs_t,ys_t), fl=_robustFit(ys_l,xs_l);
+  if(!ft||!fl){ gb.delete(); return {bad:true}; }
+  const mt=ft[0],bt=ft[1],ml=fl[0],bl=fl[1];
+  const apx=(ml*bt+bl)/(1-ml*mt), apy=mt*apx+bt;
+  let s=0,c=0; const bh=Math.round(0.12*H),bw=Math.round(0.12*W);
+  for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){s+=data[y*W+x];c++;} const bgGlob=s/c;
+  const getp=(x,y)=>{const ix=Math.round(x),iy=Math.round(y);return(ix>=0&&ix<W&&iy>=0&&iy<H)?data[iy*W+ix]:-1;};
+  const d0=-Math.round(0.18*S), dmax=Math.round(0.55*S); const outline=[]; let setbackPx=0;
+  for(let deg=2;deg<89;deg+=4){ const a=deg*Math.PI/180,dx=Math.cos(a),dy=Math.sin(a); let hit=null;
+    for(let d=d0;d<dmax;d++){ const val=getp(apx+dx*d,apy+dy*d); if(val<0)continue;
+      if(val>=bgGlob+COR_DELTA){ let ss=0,kk=0;
+        for(let k=0;k<COR_SUS;k++){const vv=getp(apx+dx*(d+k),apy+dy*(d+k)); if(vv>=0){ss+=vv;kk++;}}
+        if(kk&&ss/kk>=bgGlob+COR_DELTA){ hit=[apx+dx*d,apy+dy*d,d]; break; } } }
+    if(hit){ outline.push(hit); if(deg>=43&&deg<=47) setbackPx=Math.max(0,hit[2]); } }
+  if(setbackPx===0&&outline.length) setbackPx=Math.max(0,_median(outline.map(o=>o[2])));
+  gb.delete();
+  const setback_mm=setbackPx/PX_MM_W, excess=Math.max(0,setback_mm-FACTORY_BASE_MM);
+  return {bad:false, setback_mm, excess, mm:excess, setback:excess,
+    bgs:cornerBgsExcess(excess), tag:cornerTagExcess(excess),
+    viz:{x0,y0,S,fh,fv,apx,apy,mt,bt,ml,bl,outline,rf:RFAC_MM*PX_MM_W,W,H}};
 }
-function cornerSetback(prof,n){
-  // Geometric corner rounding only. Conservative: a corner is only flagged as rounded
-  // when its tip is GENUINELY dark background (the corner is cut/rounded against the dark
-  // mat) AND the rise back to card brightness sits in a plausible band. Holographic foil,
-  // busy art, and loose detection produce ambiguous reads, which are treated as sharp
-  // (wear/physical condition is assumed perfect, so we never invent damage).
-  let cs=0,cc=0; const ia=Math.floor(n*0.55),ib=Math.floor(n*0.95);
-  for(let t=ia;t<ib;t++){cs+=prof[t];cc++;}
-  const cardRef=cc?cs/cc:prof[n-1];
-  let ts=0,tc=0; const tnn=Math.min(4,n);
-  for(let t=0;t<tnn;t++){ts+=prof[t];tc++;}
-  const tipVal=tc?ts/tc:prof[0];
-  const contrast=cardRef-tipVal; const look=Math.floor(n*0.5); let setback=0;
-  if(contrast>25 && tipVal<50){
-    const thr=tipVal+0.5*contrast; let rise=-1;
-    for(let t=0;t<look;t++){
-      if(prof[t]>=thr){
-        let s=0,k=0; for(let u=t;u<Math.min(t+8,n);u++){s+=prof[u];k++;}
-        if(k && s/k>=thr){ rise=t; break; }
-      }
-    }
-    if(rise>6 && rise<=35) setback=rise;
-  }
-  return setback;
-}
-// BGS: strict, half-point corner sub-grade (a small rounding drops it quickly)
-function bgsCornerGrade(sb){
-  if(sb<=2)return 10.0; if(sb<=4)return 9.5; if(sb<=7)return 9.0;
-  if(sb<=11)return 8.5; if(sb<=16)return 8.0; if(sb<=24)return 7.5; return 7.0;
-}
-// TAG: granular 1000-point corner score (continuous), more forgiving slope
-function tagCornerPts(sb){ return sb<=2?1000:Math.max(600,Math.round(1000-sb*10)); }
-function assessCorners(warped){
-  const H=warped.rows,W=warped.cols,R=Math.round(OUT_W*0.07);
-  const pos={TL:[0,0],TR:[W-R,0],BL:[0,H-R],BR:[W-R,H-R]};
+function assessCorners(mwarp,outer){
   const metrics={};
   for(const name of ['TL','TR','BL','BR']){
-    const [x0,y0]=pos[name];
-    const roi=warped.roi(new cv.Rect(x0,y0,R,R));
-    const gray=new cv.Mat(); cv.cvtColor(roi,gray,cv.COLOR_RGBA2GRAY);
-    const blur=new cv.Mat(); cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
-    const bF=new cv.Mat(); blur.convertTo(bF,cv.CV_32F);
-    const n=R,data=bF.data32F;
-    const prof=new Float64Array(n);
-    for(let t=0;t<n;t++){const[c,r]=diagXY(name,t,n);prof[t]=data[r*n+c];}
-    const sb=cornerSetback(prof,n);
-    metrics[name]={setback:sb, mm:sb/PX_MM_W, bgs:bgsCornerGrade(sb), tag:tagCornerPts(sb)};
-    roi.delete();gray.delete();blur.delete();bF.delete();
+    let r; try{ r=analyzeCornerLocal(mwarp,name,outer); }catch(e){ console.warn('corner',name,e); r={bad:true}; }
+    metrics[name]=r.bad?{setback_mm:0,excess:0,mm:0,setback:0,bgs:10.0,tag:1000,viz:null}:r;
   }
-  let bgsCorner=10.0, tagCorner=1000, worst='TL', worstSb=-1;
-  for(const k in metrics){
-    bgsCorner=Math.min(bgsCorner,metrics[k].bgs);
-    tagCorner=Math.min(tagCorner,metrics[k].tag);
-    if(metrics[k].setback>worstSb){worstSb=metrics[k].setback;worst=k;}
-  }
+  let bgsCorner=10.0,tagCorner=1000,worst='TL',worstEx=-1;
+  for(const k in metrics){ bgsCorner=Math.min(bgsCorner,metrics[k].bgs); tagCorner=Math.min(tagCorner,metrics[k].tag);
+    if(metrics[k].excess>worstEx){worstEx=metrics[k].excess;worst=k;} }
   return {bgsCorner,tagCorner,worst,metrics};
 }
 
@@ -648,24 +666,59 @@ function outlineWarning(cen){
   const why=tooBig?`a ${maxB.toFixed(1)}mm border`:'the card shape looks off';
   return `<div class="warn-banner">&#9888; Outline looks off (${why}). Put the <b style="color:#ffd54a">gold</b> lines on the card edge and the <b style="color:#00e5ff">color</b> lines on the print border — numbers below aren't reliable until then.</div>`;
 }
+// Draw each corner's zoomed crop + gridlines + ideal (factory) vs actual curvature.
+// Wrapped per corner so a render hiccup leaves the card blank rather than breaking the report.
+function _rayCircleT(apx,apy,ang,cxc,cyc,rf){
+  const ux=Math.cos(ang),uy=Math.sin(ang),ex=apx-cxc,ey=apy-cyc;
+  const bq=2*(ux*ex+uy*ey),cq=ex*ex+ey*ey-rf*rf,disc=bq*bq-4*cq;
+  if(disc<0)return null; const s=Math.sqrt(disc);
+  const ts=[(-bq-s)/2,(-bq+s)/2].filter(t=>t>0); return ts.length?Math.min(...ts):null; }
+function drawCornerViz(name){
+  const m=ADJ.cor.metrics[name], el=document.getElementById('ccv-'+name);
+  if(!el||!m||!m.viz)return;
+  const v=m.viz, RES=el.width, f=RES/v.S;
+  const roi=ADJ.mwarp.roi(new cv.Rect(v.x0,v.y0,v.S,v.S)); const fl=new cv.Mat();
+  if(v.fh&&v.fv)cv.flip(roi,fl,-1); else if(v.fh)cv.flip(roi,fl,1); else if(v.fv)cv.flip(roi,fl,0); else roi.copyTo(fl);
+  const rs=new cv.Mat(); cv.resize(fl,rs,new cv.Size(RES,RES)); cv.imshow(el,rs); roi.delete();fl.delete();rs.delete();
+  const ctx=el.getContext('2d'), sx=x=>x*f, sy=y=>y*f;
+  ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1;
+  for(let i=1;i<6;i++){const p=RES*i/6;ctx.beginPath();ctx.moveTo(p,0);ctx.lineTo(p,RES);ctx.moveTo(0,p);ctx.lineTo(RES,p);ctx.stroke();}
+  ctx.restore();
+  ctx.strokeStyle='rgba(120,240,140,0.92)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(sx(0),sy(v.bt)); ctx.lineTo(sx(v.W-1),sy(v.mt*(v.W-1)+v.bt)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(sx(v.bl),sy(0)); ctx.lineTo(sx(v.ml*(v.H-1)+v.bl),sy(v.H-1)); ctx.stroke();
+  const cxc=v.apx+v.rf, cyc=v.apy+v.rf;
+  ctx.strokeStyle='#00e5ff'; ctx.lineWidth=2; ctx.setLineDash([4,3]); ctx.beginPath();
+  for(let deg=180,st=false;deg<=270;deg+=3){const a=deg*Math.PI/180,px=sx(cxc+v.rf*Math.cos(a)),py=sy(cyc+v.rf*Math.sin(a));
+    if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);} ctx.stroke(); ctx.setLineDash([]);
+  const FMIN=FACTORY_BASE_MM*PX_MM_W*0.80, col=corColor(m.excess);
+  ctx.strokeStyle=col; ctx.lineWidth=2.4; ctx.beginPath();
+  for(let i=0,st2=false;i<v.outline.length;i++){const o=v.outline[i],ox=o[0],oy=o[1],d=o[2]; let px,py;
+    if(d<FMIN){const ang=Math.atan2(oy-v.apy,ox-v.apx); let t=_rayCircleT(v.apx,v.apy,ang,cxc,cyc,v.rf); if(t==null)t=d;
+      px=sx(v.apx+Math.cos(ang)*t); py=sy(v.apy+Math.sin(ang)*t);}
+    else{px=sx(ox);py=sy(oy);}
+    if(!st2){ctx.moveTo(px,py);st2=true;}else ctx.lineTo(px,py);} ctx.stroke();
+  ctx.fillStyle='#ffe14a'; ctx.beginPath(); ctx.arc(sx(v.apx),sy(v.apy),3.5,0,Math.PI*2); ctx.fill();
+  const ex=m.excess, lab=ex<=0.1?'Sharp':ex.toFixed(2)+' mm rounded';
+  ctx.fillStyle='rgba(14,14,22,0.88)'; ctx.fillRect(0,RES-22,RES,22);
+  ctx.fillStyle=col; ctx.font='13px "JetBrains Mono",monospace'; ctx.textBaseline='middle';
+  ctx.fillText(`${name}  ${lab}`,7,RES-10);
+}
+function drawCornerVizAll(){ if(!ADJ||!ADJ.cor)return;
+  for(const name of ['TL','TR','BL','BR']){ try{drawCornerViz(name);}catch(e){console.warn('corner viz',name,e);} } }
 function recomputeBody(){
   const cen=computeCenteringGap();
   const gr=estimateGrades(cen,ADJ.cor);
   const strat=evaluateStrategy(cen,ADJ.cor,gr);
   document.getElementById('report-body').innerHTML=outlineWarning(cen)+buildBodyHTML(cen,ADJ.cor,gr,strat);
+  drawCornerVizAll();
 }
 
-// Re-crop the card rectangle the edge lines define, rescale to OUT_WxOUT_H, re-measure
-// corners there. Wrapped so a cv hiccup can never break the report.
+// Re-measure each corner locally against the current gold (edge) lines. Skew-robust:
+// each corner is found in its own quadrant. Wrapped so a cv hiccup can't break the report.
 function reassessCorners(){
-  try{
-    const o=ADJ.outer;
-    const x=Math.round(o.L),y=Math.round(o.T),w=Math.round(o.R-o.L),h=Math.round(o.B-o.T);
-    if(w<40||h<40||x<0||y<0||x+w>MW||y+h>MH)return;
-    const roi=ADJ.mwarp.roi(new cv.Rect(x,y,w,h));
-    const rs=new cv.Mat(); cv.resize(roi,rs,new cv.Size(OUT_W,OUT_H));
-    ADJ.cor=assessCorners(rs); roi.delete(); rs.delete();
-  }catch(e){console.warn('corner reassess failed',e);}
+  try{ ADJ.cor=assessCorners(ADJ.mwarp,ADJ.outer); }
+  catch(e){console.warn('corner reassess failed',e);}
 }
 
 function setupDrag(){
@@ -723,11 +776,12 @@ function buildBodyHTML(cen,cor,gr,strategy){
     bars+=`<div class="bar"><div class="val">${mmv[i].toFixed(2)}</div>
       <div class="col" style="height:${pct}%;background:${barCols[i]}"></div>
       <div class="lab">${barLab[i]}</div></div>`;}
-  const m=cor.metrics,weak=cor.worst,showWeak=m[weak].setback>0;
-  const cc=k=>`<div class="cc${(k===weak&&showWeak)?' weak':''}">
-    <div class="cn">${k}</div>
-    <div class="cm">${m[k].mm<=0.05?'Sharp':m[k].mm.toFixed(2)+' mm'}</div>
-    <div class="cs">BGS ${m[k].bgs.toFixed(1)} &nbsp;·&nbsp; TAG ${m[k].tag}</div></div>`;
+  const m=cor.metrics,weak=cor.worst;
+  const cc=k=>{const mk=m[k],ex=mk.excess||0;
+    const bord=(k===weak&&ex>0.12)?corColor(ex):'transparent';
+    return `<div class="cc" style="border-color:${bord}">
+    <canvas id="ccv-${k}" width="240" height="240"></canvas>
+    <div class="cs">BGS ${mk.bgs.toFixed(1)} &nbsp;·&nbsp; TAG ${mk.tag}</div></div>`;};
   const grade=(co,g,l,col)=>`<div class="grade" style="border-color:${col}">
     <div class="co">${co}</div><div class="g" style="color:${col}">${g}</div><div class="l">${l}</div></div>`;
   let picks='',pi=0;
@@ -744,7 +798,7 @@ function buildBodyHTML(cen,cor,gr,strategy){
         <div class="mrow"><span class="k">Centering</span>
           L/R&nbsp; <b style="color:var(--cyan)">${lrHi}/${lrLo}</b> (${lrDir} heavy)
           &nbsp;&nbsp; T/B&nbsp; <b style="color:var(--pink)">${tbHi}/${tbLo}</b> (${tbDir} heavy)</div>
-        <div class="mrow"><span class="k">Corner rounding — sharpness (wear assumed perfect)</span>
+        <div class="mrow"><span class="k">Corners — ideal vs actual curvature (per quadrant; whitening assumed perfect)</span>
           <div class="corner-grid">${cc('TL')}${cc('TR')}${cc('BL')}${cc('BR')}</div></div>
       </div>
     </div>
@@ -807,11 +861,12 @@ function process(canvas){
       // corners warp cleanly on their own.
       const corners=det.corners;
       const mwarp=warpCardMargin(src,corners); src.delete(); src=null;
-      // tight card crop (the inset rect) for the initial auto border + corner read
+      // tight card crop (the inset rect) for the initial auto border read
       const card0=mwarp.roi(new cv.Rect(MARGIN,MARGIN,OUT_W,OUT_H)).clone();
       const borders=measureBorders(card0);
-      const cor=assessCorners(card0);
       card0.delete();
+      // corners read per-quadrant from the margin warp, anchored to the inset (edge) rect
+      const cor=assessCorners(mwarp,{L:MARGIN,R:MARGIN+OUT_W,T:MARGIN,B:MARGIN+OUT_H});
       const cen=computeCentering(borders);
       const gr=estimateGrades(cen,cor);
       const strat=evaluateStrategy(cen,cor,gr);
