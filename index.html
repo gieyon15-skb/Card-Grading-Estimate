@@ -114,7 +114,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v13</div>
+    <div class="ver">v14</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -536,7 +536,11 @@ function evaluateStrategy(cen,cor,gr){
     lines:[`Centering limits PSA to ${gr.psa_g} (${gr.psa_n}).`,
            `Reconsider card condition before submitting.`]});
   // BGS
-  if(gap>=1.0) picks.push({rank:3,co:'BGS',verdict:'HIGH RISK',vcolor:'#ff6b35',
+  // BGS — all measured sub-grades at 10 => Black Label, the top BGS designation
+  if(gr.bgs_cen>=10 && bgsCorner>=10) picks.push({rank:1,co:'BGS',verdict:'BLACK LABEL',vcolor:'#e8c84a',
+    lines:[`All sub-grades read 10 — this is BGS 10 Black Label territory.`,
+           `The rarest, highest-value slab; it tops PSA 10 and TAG 10 if surface & edges also grade 10.`]});
+  else if(gap>=1.0) picks.push({rank:3,co:'BGS',verdict:'HIGH RISK',vcolor:'#ff6b35',
     lines:[`Weakest-link: ${weak} corner (BGS ${bgsCorner.toFixed(1)}) anchors overall`,
            `to ~${gr.bgs_overall.toFixed(1)}. Centering sub (${gr.bgs_cen.toFixed(1)}) is being wasted.`]});
   else if(gap>=0.5) picks.push({rank:2,co:'BGS',verdict:'MODERATE RISK',vcolor:'#ffaa00',
@@ -590,8 +594,11 @@ function redrawStage(){
   hy(ADJ.outer.T*syf,'#ffd54a',1.5); hy(ADJ.outer.B*syf,'#ffd54a',1.5);
   vx(ADJ.inner.L*sxf,'#00e5ff',1.6); vx(ADJ.inner.R*sxf,'#00e5ff',1.6);
   hy(ADJ.inner.T*syf,'#ff4081',1.6); hy(ADJ.inner.B*syf,'#ff4081',1.6);
-  const hand=(x,y,col)=>{ctx.fillStyle=col;roundRect(ctx,x-7,y-7,14,14,3);ctx.fill();
-    ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(x-3.5,y-1,7,2);ctx.fillRect(x-1,y-3.5,2,7);};
+  const hand=(x,y,col)=>{ctx.save();
+    ctx.globalAlpha=0.16;ctx.fillStyle=col;roundRect(ctx,x-8,y-8,16,16,3);ctx.fill();
+    ctx.globalAlpha=1;ctx.strokeStyle=col;ctx.lineWidth=1.5;roundRect(ctx,x-8,y-8,16,16,3);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x-6,y);ctx.lineTo(x-2.5,y);ctx.moveTo(x+2.5,y);ctx.lineTo(x+6,y);
+    ctx.moveTo(x,y-6);ctx.lineTo(x,y-2.5);ctx.moveTo(x,y+2.5);ctx.lineTo(x,y+6);ctx.stroke();ctx.restore();};
   const H=c.height,W=c.width;
   hand(ADJ.outer.L*sxf,H*0.25,'#ffd54a'); hand(ADJ.outer.R*sxf,H*0.25,'#ffd54a');
   hand(W*0.25,ADJ.outer.T*syf,'#ffd54a'); hand(W*0.25,ADJ.outer.B*syf,'#ffd54a');
@@ -610,6 +617,27 @@ function redrawStage(){
   ctx.strokeRect(oLx,oTy,bw,bh); ctx.strokeRect(oRx-bw,oTy,bw,bh);
   ctx.strokeRect(oLx,oBy-bh,bw,bh); ctx.strokeRect(oRx-bw,oBy-bh,bw,bh);
   ctx.setLineDash([]);
+  // magnifier loupe — shown while a line is being grabbed/dragged, for precise placement
+  if(ADJ.loupe){
+    const {key,x:px,y:py}=ADJ.loupe;
+    const grp=key[0]==='o'?'outer':'inner', side=key[1];
+    const horiz=(side==='T'||side==='B');
+    const lineCol=(grp==='outer')?'#ffd54a':(horiz?'#ff4081':'#00e5ff');
+    const lineCoord=ADJ[grp][side]*(horiz?syf:sxf);
+    const focusX=horiz?px:lineCoord, focusY=horiz?lineCoord:py;
+    const R=54,M=3.0, srcW=2*R/M, srcH=2*R/M, sx=focusX-srcW/2, sy=focusY-srcH/2;
+    const lcx=c.width/2, lcy=(py<c.height/2)?(R+16):(c.height-R-16);
+    ctx.save();
+    ctx.beginPath();ctx.arc(lcx,lcy,R,0,Math.PI*2);ctx.closePath();
+    ctx.fillStyle='#0a0a14';ctx.fill();ctx.clip();
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(ADJ.cardImg,sx,sy,srcW,srcH,lcx-R,lcy-R,2*R,2*R);
+    ctx.strokeStyle=lineCol;ctx.lineWidth=2.5;ctx.beginPath();
+    if(horiz){ctx.moveTo(lcx-R,lcy);ctx.lineTo(lcx+R,lcy);}else{ctx.moveTo(lcx,lcy-R);ctx.lineTo(lcx,lcy+R);}
+    ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle='rgba(255,255,255,0.92)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(lcx,lcy,R,0,Math.PI*2);ctx.stroke();
+  }
 }
 
 function outlineWarning(cen){
@@ -650,8 +678,8 @@ function setupDrag(){
                 ['iL',Math.abs(p.x-ADJ.inner.L*sxf)],['iR',Math.abs(p.x-ADJ.inner.R*sxf)],
                 ['iT',Math.abs(p.y-ADJ.inner.T*syf)],['iB',Math.abs(p.y-ADJ.inner.B*syf)]];
     cand.sort((a,b)=>a[1]-b[1]); return cand[0][1]<=TOL?cand[0][0]:null;};
-  c.addEventListener('pointerdown',e=>{const k=pick(toCanvas(e));
-    if(k){active=k;c.setPointerCapture(e.pointerId);c.style.cursor='grabbing';e.preventDefault();}});
+  c.addEventListener('pointerdown',e=>{const p=toCanvas(e);const k=pick(p);
+    if(k){active=k;ADJ.loupe={key:k,x:p.x,y:p.y};c.setPointerCapture(e.pointerId);c.style.cursor='grabbing';redrawStage();e.preventDefault();}});
   c.addEventListener('pointermove',e=>{const p=toCanvas(e);
     if(!active){c.style.cursor=pick(p)?'grab':'default';return;}
     const {sxf,syf}=ADJ,o=ADJ.outer,i=ADJ.inner,G=8;
@@ -663,9 +691,10 @@ function setupDrag(){
     else if(active==='iR')i.R=Math.min(o.R-G,Math.max(p.x/sxf,i.L+G));
     else if(active==='iT')i.T=Math.max(o.T+G,Math.min(p.y/syf,i.B-G));
     else if(active==='iB')i.B=Math.min(o.B-G,Math.max(p.y/syf,i.T+G));
+    ADJ.loupe={key:active,x:p.x,y:p.y};
     redrawStage(); e.preventDefault();});
-  const end=()=>{if(active!==null){active=null;
-    c.style.cursor='grab'; reassessCorners(); recomputeBody();}};
+  const end=()=>{if(active!==null){active=null;ADJ.loupe=null;
+    c.style.cursor='grab'; reassessCorners(); recomputeBody(); redrawStage();}};
   c.addEventListener('pointerup',end); c.addEventListener('pointercancel',end);
 }
 
@@ -677,7 +706,7 @@ function setupStage(mwarp,borders,cor){
   const off=document.createElement('canvas'); off.width=dispW; off.height=dispH;
   off.getContext('2d').drawImage(canvas,0,0);
   const a=MARGIN;
-  ADJ={canvas,cardImg:off,mwarp,cor,sxf:dispW/MW,syf:dispH/MH,
+  ADJ={canvas,cardImg:off,mwarp,cor,sxf:dispW/MW,syf:dispH/MH,loupe:null,
     outer:{L:a,R:a+OUT_W,T:a,B:a+OUT_H},
     inner:{L:a+borders.left,R:a+OUT_W-borders.right,T:a+borders.top,B:a+OUT_H-borders.bottom}};
   setupDrag(); redrawStage();
@@ -730,7 +759,7 @@ function buildBodyHTML(cen,cor,gr,strategy){
 }
 
 const VBADGE={'TOP PICK':'#40e0d0','STRONG OPTION':'#ffd700','GOOD OPTION':'#ffd700',
-  'STRONG ALT':'#40e0d0',
+  'STRONG ALT':'#40e0d0','BLACK LABEL':'#e8c84a',
   'CONSIDER':'#40e0d0','VIABLE':'#c0c0c0','MODERATE RISK':'#ffaa00','HIGH RISK':'#ff6b35',
   'LOWER PRIORITY':'#888c94','SKIP':'#888c94'};
 const RANK_NUM={1:'①',2:'②',3:'③'};
