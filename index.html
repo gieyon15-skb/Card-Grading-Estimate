@@ -114,7 +114,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v12</div>
+    <div class="ver">v13</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -489,7 +489,7 @@ function estimateGrades(cen,cor){
     tag_exact>=850?"NM-MT+":tag_exact>=800?"NM-MT":tag_exact>=700?"NM":"EX";
   const tag_g=tag_exact>=950?10:tag_exact>=900?9:tag_exact>=850?8.5:
     tag_exact>=800?8:tag_exact>=700?7:6;
-  return {psa_g,psa_n,bgs_cen,bgs_corner,bgs_overall,tag_g,tag_n,tag_exact,tag_corner};
+  return {psa_g,psa_n,bgs_cen,bgs_corner,bgs_overall,tag_g,tag_n,tag_exact,tag_corner,tag_cen:c};
 }
 function evaluateStrategy(cen,cor,gr){
   const worst=Math.max(cen.lr_off,cen.tb_off);
@@ -499,16 +499,30 @@ function evaluateStrategy(cen,cor,gr){
   const lr_hi=Math.max(cen.L_pct,cen.R_pct).toFixed(1),lr_lo=Math.min(cen.L_pct,cen.R_pct).toFixed(1);
   const tb_hi=Math.max(cen.T_pct,cen.B_pct).toFixed(1),tb_lo=Math.min(cen.T_pct,cen.B_pct).toFixed(1);
   const picks=[];
-  // TAG
-  if(worst<=51.0) picks.push({rank:1,co:'TAG',verdict:'TOP PICK',vcolor:'#40e0d0',
-    lines:[`Near-perfect centering (${lr_hi}/${lr_lo} L/R, ${tb_hi}/${tb_lo} T/B).`,
-           `TAG's exact math rewards this most. Pred. score: ${gr.tag_exact}.`]});
-  else if(worst<=55.0) picks.push({rank:2,co:'TAG',verdict:'CONSIDER',vcolor:'#40e0d0',
-    lines:[`Eligible for TAG ${gr.tag_g} (score ${gr.tag_exact}).`,
-           `Slightly outside top tier but a solid mathematical result.`]});
-  else picks.push({rank:3,co:'TAG',verdict:'SKIP',vcolor:'#888c94',
-    lines:[`Centering (${worst.toFixed(1)}%) limits TAG score.`,
-           `PSA or BGS will likely yield a better grade.`]});
+  // TAG — keyed off the predicted score; names the limiting driver + headroom to the next tier
+  {
+    const cenLoss=0.3*(1000-gr.tag_cen), corLoss=0.3*(1000-gr.tag_corner);
+    const drv = corLoss>cenLoss?'Corners':'Centering';
+    const gapPerf=1000-gr.tag_exact;
+    if(gr.tag_g>=10){
+      const sub=gr.tag_exact>=990?'Pristine':'Gem Mint';
+      const top=gr.psa_g<10;
+      const l2 = gapPerf<=1 ? `Near-flawless — corners and centering both essentially max.`
+        : corLoss<1 ? `Corners read max — the ${gapPerf}-pt gap from 1000 is all centering.`
+        : `Most of the ${gapPerf}-pt gap from a perfect 1000 traces to ${drv.toLowerCase()}.`;
+      picks.push({rank:top?1:2,co:'TAG',verdict:top?'TOP PICK':'STRONG ALT',vcolor:'#40e0d0',
+        lines:[`TAG 10 ${sub} predicted — score ${gr.tag_exact}/1000.`,l2]});
+    } else if(gr.tag_g>=9){
+      const toTen=950-gr.tag_exact;
+      picks.push({rank:2,co:'TAG',verdict:'CONSIDER',vcolor:'#40e0d0',
+        lines:[`TAG ${gr.tag_g} ${gr.tag_n} predicted — score ${gr.tag_exact}/1000.`,
+               `${toTen} pts short of a TAG 10 — the main drag is ${drv.toLowerCase()}.`]});
+    } else {
+      picks.push({rank:3,co:'TAG',verdict:'SKIP',vcolor:'#888c94',
+        lines:[`TAG ${gr.tag_g} ${gr.tag_n} predicted — score ${gr.tag_exact}/1000.`,
+               `Held back by ${drv.toLowerCase()} here; PSA likely grades higher.`]});
+    }
+  }
   // PSA
   if(gr.psa_g===10){
     const r=worst<=51.0?2:1;
@@ -530,8 +544,9 @@ function evaluateStrategy(cen,cor,gr){
            `BGS overall ~${gr.bgs_overall.toFixed(1)} — some centering value is lost.`]});
   else picks.push({rank:2,co:'BGS',verdict:'VIABLE',vcolor:'#c0c0c0',
     lines:[`Sub-grades balanced (Cent: ${gr.bgs_cen.toFixed(1)}, Corn: ${bgsCorner.toFixed(1)}).`,
-           `BGS overall ~${gr.bgs_overall.toFixed(1)}. No weakest-link penalty.`]});
-  picks.sort((a,b)=>a.rank-b.rank||a.co.localeCompare(b.co));
+           `BGS overall ~${gr.bgs_overall.toFixed(1)}, set by the centering sub.`]});
+  const CO_ORDER={PSA:0,TAG:1,BGS:2};
+  picks.sort((a,b)=>a.rank-b.rank||CO_ORDER[a.co]-CO_ORDER[b.co]);
   return picks;
 }
 
@@ -564,7 +579,7 @@ function redrawStage(){
   ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(ADJ.cardImg,0,0);
   // center guides: the middle of each edge — the correct place to line each border up
   const ccx=(ADJ.outer.L+ADJ.outer.R)/2*sxf, ccy=(ADJ.outer.T+ADJ.outer.B)/2*syf;
-  ctx.strokeStyle='rgba(255,255,255,0.30)';ctx.lineWidth=1;ctx.setLineDash([4,6]);
+  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=1.4;ctx.setLineDash([5,5]);
   ctx.beginPath();ctx.moveTo(ccx,ADJ.outer.T*syf);ctx.lineTo(ccx,ADJ.outer.B*syf);ctx.stroke();
   ctx.beginPath();ctx.moveTo(ADJ.outer.L*sxf,ccy);ctx.lineTo(ADJ.outer.R*sxf,ccy);ctx.stroke();
   ctx.setLineDash([]);
@@ -583,10 +598,10 @@ function redrawStage(){
   hand(ADJ.inner.L*sxf,H*0.5,'#00e5ff'); hand(ADJ.inner.R*sxf,H*0.5,'#00e5ff');
   hand(W*0.5,ADJ.inner.T*syf,'#ff4081'); hand(W*0.5,ADJ.inner.B*syf,'#ff4081');
   ctx.font='700 12px "JetBrains Mono",monospace';
-  drawLabel(ctx,cen.L_mm.toFixed(2),(ADJ.outer.L+ADJ.inner.L)/2*sxf,H*0.5,'#00e5ff');
-  drawLabel(ctx,cen.R_mm.toFixed(2),(ADJ.outer.R+ADJ.inner.R)/2*sxf,H*0.5,'#00e5ff');
-  drawLabel(ctx,cen.T_mm.toFixed(2),W*0.5,(ADJ.outer.T+ADJ.inner.T)/2*syf,'#ff4081');
-  drawLabel(ctx,cen.B_mm.toFixed(2),W*0.5,(ADJ.outer.B+ADJ.inner.B)/2*syf,'#ff4081');
+  drawLabel(ctx,cen.L_mm.toFixed(2),(ADJ.outer.L+ADJ.inner.L)/2*sxf,H*0.72,'#00e5ff');
+  drawLabel(ctx,cen.R_mm.toFixed(2),(ADJ.outer.R+ADJ.inner.R)/2*sxf,H*0.72,'#00e5ff');
+  drawLabel(ctx,cen.T_mm.toFixed(2),W*0.72,(ADJ.outer.T+ADJ.inner.T)/2*syf,'#ff4081');
+  drawLabel(ctx,cen.B_mm.toFixed(2),W*0.72,(ADJ.outer.B+ADJ.inner.B)/2*syf,'#ff4081');
   // corner-assessment zones (where corners are graded) — they track the gold edge lines
   const cardW=ADJ.outer.R-ADJ.outer.L,cardH=ADJ.outer.B-ADJ.outer.T;
   const bw=0.07*cardW*sxf,bh=(0.07*OUT_W/OUT_H)*cardH*syf;
@@ -686,10 +701,10 @@ function buildBodyHTML(cen,cor,gr,strategy){
     <div class="cs">BGS ${m[k].bgs.toFixed(1)} &nbsp;·&nbsp; TAG ${m[k].tag}</div></div>`;
   const grade=(co,g,l,col)=>`<div class="grade" style="border-color:${col}">
     <div class="co">${co}</div><div class="g" style="color:${col}">${g}</div><div class="l">${l}</div></div>`;
-  let picks='';
-  for(const p of strategy){const bc=VBADGE[p.verdict]||'#888';
+  let picks='',pi=0;
+  for(const p of strategy){const bc=VBADGE[p.verdict]||'#888';pi++;
     picks+=`<div class="pick" style="border-color:${p.vcolor}">
-      <div class="hd"><span class="rk">${RANK_NUM[p.rank]||p.rank}</span>
+      <div class="hd"><span class="rk">${RANK_NUM[pi]||pi}</span>
       <span class="co" style="color:${p.vcolor}">${p.co}</span>
       <span class="vd" style="background:${bc}22;color:${bc}">${p.verdict}</span></div>
       ${p.lines.map(l=>`<div class="ln">${l}</div>`).join('')}</div>`;}
@@ -715,6 +730,7 @@ function buildBodyHTML(cen,cor,gr,strategy){
 }
 
 const VBADGE={'TOP PICK':'#40e0d0','STRONG OPTION':'#ffd700','GOOD OPTION':'#ffd700',
+  'STRONG ALT':'#40e0d0',
   'CONSIDER':'#40e0d0','VIABLE':'#c0c0c0','MODERATE RISK':'#ffaa00','HIGH RISK':'#ff6b35',
   'LOWER PRIORITY':'#888c94','SKIP':'#888c94'};
 const RANK_NUM={1:'①',2:'②',3:'③'};
