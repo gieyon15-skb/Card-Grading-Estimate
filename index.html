@@ -112,7 +112,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v15</div>
+    <div class="ver">v16</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -398,7 +398,7 @@ function measureBorders(warped){
    one corner read better than its diagonal. Grade = how far the actual corner is set
    back BEYOND the factory rounding. Geometry is also returned so the report can draw
    each corner (ideal vs actual curvature). */
-const COR_DELTA=13, COR_SUS=6, RFAC_MM=3.3, FACTORY_BASE_MM=1.45;
+const COR_DELTA=13, COR_SUS=6, RFAC_MM=3.3, FACTORY_BASE_MM=1.45, COR_MAXSLOPE=0.09, COR_NOISE_RMS=7.0;
 function _median(a){ if(!a.length)return 0; const b=a.slice().sort((x,y)=>x-y),n=b.length;
   return n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2; }
 function _polyfit1(xs,ys){ const n=xs.length; let sx=0,sy=0,sxx=0,sxy=0;
@@ -409,6 +409,13 @@ function _robustFit(xs,ys){ if(xs.length<4)return null; let [m,b]=_polyfit1(xs,y
   for(let it=0;it<3;it++){ const res=xs.map((x,i)=>Math.abs(ys[i]-(m*x+b))), med=_median(res)+1e-6, kx=[],ky=[];
     for(let i=0;i<xs.length;i++) if(res[i]<2.5*med){kx.push(xs[i]);ky.push(ys[i]);}
     if(kx.length<4)break; [m,b]=_polyfit1(kx,ky); } return [m,b]; }
+function _fitEdge(xs,ys){            // leashed: cap tilt to ~5deg; flatten to gold-aligned when noisy
+  const f=_robustFit(xs,ys); if(!f)return null; let m=f[0],b=f[1];
+  const res=xs.map((x,i)=>ys[i]-(m*x+b));
+  const rms=Math.sqrt(res.reduce((a,r)=>a+r*r,0)/Math.max(1,res.length));
+  const mx=_median(xs), my=_median(ys);
+  if(rms>COR_NOISE_RMS) m=0; else m=Math.max(-COR_MAXSLOPE,Math.min(m,COR_MAXSLOPE));
+  return [m, my-m*mx, rms]; }
 function _firstRise(getv,len,bg,lo,hi){ const thr=bg+COR_DELTA; lo=Math.max(0,lo);hi=Math.min(len,hi);
   for(let t=lo;t<hi;t++){ if(t+COR_SUS>len)break;
     if(getv(t)>=thr){ let s=0; for(let k=0;k<COR_SUS;k++)s+=getv(t+k); if(s/COR_SUS>=thr)return t; } }
@@ -431,7 +438,8 @@ function analyzeCornerLocal(mwarp,name,outer){
   if(fh&&fv)cv.flip(roi,work,-1); else if(fh)cv.flip(roi,work,1); else if(fv)cv.flip(roi,work,0); else roi.copyTo(work);
   roi.delete();
   const gray=new cv.Mat(); cv.cvtColor(work,gray,cv.COLOR_RGBA2GRAY); work.delete();
-  const gb=new cv.Mat(); cv.GaussianBlur(gray,gb,new cv.Size(7,7),0); gray.delete();
+  const den=new cv.Mat(); cv.bilateralFilter(gray,den,5,55,55,cv.BORDER_DEFAULT); gray.delete();
+  const gb=new cv.Mat(); cv.GaussianBlur(den,gb,new cv.Size(5,5),0); den.delete();
   const W=gb.cols,H=gb.rows,data=gb.data, gx=out, gy=out;
   const colBg=x=>{let s=0;for(let y=0;y<8;y++)s+=data[y*W+x];return s/8;};
   const rowBg=y=>{let s=0;for(let x=0;x<8;x++)s+=data[y*W+x];return s/8;};
@@ -441,21 +449,26 @@ function analyzeCornerLocal(mwarp,name,outer){
   const ys_l=[],xs_l=[];
   for(let y=Math.round(gy+0.13*S);y<Math.round(H*0.93);y+=2){
     const x=_firstRise(t=>data[y*W+t],W,rowBg(y),gx-BAND,gx+BAND); if(x>=0){ys_l.push(y);xs_l.push(x);} }
-  const ft=_robustFit(xs_t,ys_t), fl=_robustFit(ys_l,xs_l);
+  const ft=_fitEdge(xs_t,ys_t), fl=_fitEdge(ys_l,xs_l);
   if(!ft||!fl){ gb.delete(); return {bad:true}; }
   const mt=ft[0],bt=ft[1],ml=fl[0],bl=fl[1];
   const apx=(ml*bt+bl)/(1-ml*mt), apy=mt*apx+bt;
   let s=0,c=0; const bh=Math.round(0.12*H),bw=Math.round(0.12*W);
   for(let y=0;y<bh;y++)for(let x=0;x<bw;x++){s+=data[y*W+x];c++;} const bgGlob=s/c;
   const getp=(x,y)=>{const ix=Math.round(x),iy=Math.round(y);return(ix>=0&&ix<W&&iy>=0&&iy<H)?data[iy*W+ix]:-1;};
-  const d0=-Math.round(0.18*S), dmax=Math.round(0.55*S); const outline=[]; let setbackPx=0;
-  for(let deg=2;deg<89;deg+=4){ const a=deg*Math.PI/180,dx=Math.cos(a),dy=Math.sin(a); let hit=null;
+  const d0=-Math.round(0.18*S), dmax=Math.round(0.55*S);
+  const degs=[], rawd=[];
+  for(let deg=2;deg<89;deg+=4){ const a=deg*Math.PI/180,dx=Math.cos(a),dy=Math.sin(a); let hd=null;
     for(let d=d0;d<dmax;d++){ const val=getp(apx+dx*d,apy+dy*d); if(val<0)continue;
       if(val>=bgGlob+COR_DELTA){ let ss=0,kk=0;
         for(let k=0;k<COR_SUS;k++){const vv=getp(apx+dx*(d+k),apy+dy*(d+k)); if(vv>=0){ss+=vv;kk++;}}
-        if(kk&&ss/kk>=bgGlob+COR_DELTA){ hit=[apx+dx*d,apy+dy*d,d]; break; } } }
-    if(hit){ outline.push(hit); if(deg>=43&&deg<=47) setbackPx=Math.max(0,hit[2]); } }
-  if(setbackPx===0&&outline.length) setbackPx=Math.max(0,_median(outline.map(o=>o[2])));
+        if(kk&&ss/kk>=bgGlob+COR_DELTA){ hd=d; break; } } }
+    if(hd!==null){ degs.push(deg); rawd.push(hd); } }
+  const sm=rawd.map((_,i)=>{ const lo=Math.max(0,i-1),hi=Math.min(rawd.length,i+2); return _median(rawd.slice(lo,hi)); });
+  const outline=[];
+  for(let i=0;i<degs.length;i++){ const a=degs[i]*Math.PI/180; outline.push([apx+Math.cos(a)*sm[i],apy+Math.sin(a)*sm[i],sm[i]]); }
+  const diag=[]; for(let i=0;i<degs.length;i++) if(degs[i]>=33&&degs[i]<=57) diag.push(sm[i]);
+  let setbackPx=diag.length?_median(diag):(sm.length?_median(sm):0); setbackPx=Math.max(0,setbackPx);
   gb.delete();
   const setback_mm=setbackPx/PX_MM_W, excess=Math.max(0,setback_mm-FACTORY_BASE_MM);
   return {bad:false, setback_mm, excess, mm:excess, setback:excess,
@@ -644,7 +657,8 @@ function redrawStage(){
     const lineCoord=ADJ[grp][side]*(horiz?syf:sxf);
     const focusX=horiz?px:lineCoord, focusY=horiz?lineCoord:py;
     const R=54,M=3.0, srcW=2*R/M, srcH=2*R/M, sx=focusX-srcW/2, sy=focusY-srcH/2;
-    const lcx=c.width/2, lcy=(py<c.height/2)?(R+16):(c.height-R-16);
+    const ccx=((ADJ.outer.L+ADJ.outer.R)/2)*sxf, ccy=((ADJ.outer.T+ADJ.outer.B)/2)*syf;
+    const lcx=Math.max(R+4,Math.min(ccx,c.width-R-4)), lcy=Math.max(R+4,Math.min(ccy,c.height-R-4));
     ctx.save();
     ctx.beginPath();ctx.arc(lcx,lcy,R,0,Math.PI*2);ctx.closePath();
     ctx.fillStyle='#0a0a14';ctx.fill();ctx.clip();
