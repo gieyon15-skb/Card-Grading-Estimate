@@ -112,7 +112,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v17</div>
+    <div class="ver">v18</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -420,10 +420,11 @@ function _firstRise(getv,len,bg,lo,hi){ const thr=bg+COR_DELTA; lo=Math.max(0,lo
   for(let t=lo;t<hi;t++){ if(t+COR_SUS>len)break;
     if(getv(t)>=thr){ let s=0; for(let k=0;k<COR_SUS;k++)s+=getv(t+k); if(s/COR_SUS>=thr)return t; } }
   return -1; }
-function cornerBgsExcess(ex){ if(ex<=0.12)return 10.0; if(ex<=0.30)return 9.5; if(ex<=0.55)return 9.0;
-  if(ex<=0.85)return 8.5; if(ex<=1.25)return 8.0; if(ex<=1.9)return 7.5; return 7.0; }
-function cornerTagExcess(ex){ return ex<=0.12?1000:Math.max(600,Math.round(1000-(ex-0.12)*240)); }
-function corColor(ex){ return ex<=0.12?'#37e0a0':ex<=0.45?'#ffd54a':ex<=0.9?'#ff9f40':'#ff5470'; }
+const COR_DEADBAND=0.65;
+function cornerBgsDev(s){ if(s<=0)return 10.0; if(s<=0.2)return 9.0; if(s<=0.45)return 8.5;
+  if(s<=0.7)return 8.0; if(s<=1.0)return 7.5; return 7.0; }
+function cornerTagDev(s){ return s<=0?1000:Math.max(500,Math.round(1000-s*350)); }
+function corColor(s){ return s<=0.05?'#37e0a0':s<=0.3?'#ffd54a':s<=0.6?'#ff9f40':'#ff5470'; }
 
 function analyzeCornerLocal(mwarp,name,outer){
   const S=Math.round(0.17*OUT_W), out=Math.round(0.055*OUT_W), BAND=Math.round(1.0*PX_MM_W);
@@ -470,10 +471,19 @@ function analyzeCornerLocal(mwarp,name,outer){
   const diag=[]; for(let i=0;i<degs.length;i++) if(degs[i]>=33&&degs[i]<=57) diag.push(sm[i]);
   let setbackPx=diag.length?_median(diag):(sm.length?_median(sm):0); setbackPx=Math.max(0,setbackPx);
   gb.delete();
-  const setback_mm=setbackPx/PX_MM_W, excess=Math.max(0,setback_mm-FACTORY_BASE_MM);
-  return {bad:false, setback_mm, excess, mm:excess, setback:excess,
-    bgs:cornerBgsExcess(excess), tag:cornerTagExcess(excess),
-    viz:{x0,y0,S,fh,fv,apx,apy,mt,bt,ml,bl,outline,rf:RFAC_MM*PX_MM_W,W,H}};
+  const setback_mm=setbackPx/PX_MM_W;
+  // shape deviation from factory radius (catches clips/cuts that read SHARPER than factory,
+  // which the rounder-only setback misses), guarded against unreliable fits on clean corners.
+  const fc=_fitCircle(outline.map(o=>[o[0],o[1]]));
+  let sevShape=0, dev=0, valid=false;
+  if(fc){ const Rmm=fc[2]/PX_MM_W, rms=fc[3];
+    if(Rmm>=1.2 && Rmm<=5.0 && rms<6){ valid=true; dev=Rmm-RFAC_MM; sevShape=Math.max(0,Math.abs(dev)-COR_DEADBAND); } }
+  const sevRound=Math.max(0,setback_mm-FACTORY_BASE_MM);
+  const severity=Math.max(sevShape,sevRound);
+  return {bad:false, setback_mm, severity, excess:severity, mm:severity, setback:severity, dev,
+    bgs:cornerBgsDev(severity), tag:cornerTagDev(severity),
+    viz:{x0,y0,S,fh,fv,apx,apy,mt,bt,ml,bl,outline,rf:RFAC_MM*PX_MM_W,W,H,
+      fit:fc?{a:fc[0],b:fc[1],R:fc[2]}:null, fitValid:valid, dev}};
 }
 function assessCorners(mwarp,outer){
   const metrics={};
@@ -718,21 +728,22 @@ function drawCornerViz(name){
   ctx.strokeStyle='#00e5ff'; ctx.lineWidth=2; ctx.setLineDash([4,3]); ctx.beginPath();
   for(let deg=180,st=false;deg<=270;deg+=3){const a=deg*Math.PI/180,px=sx(cxc+v.rf*Math.cos(a)),py=sy(cyc+v.rf*Math.sin(a));
     if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);} ctx.stroke(); ctx.setLineDash([]);
-  const col=corColor(m.excess);
-  // actual rounding: fit a smooth arc to the outline (robust to foil speckle); fall back to ideal arc
-  const arcpts=v.outline.map(o=>[o[0],o[1]]); const fc=_fitCircle(arcpts);
+  const col=corColor(m.severity!=null?m.severity:m.excess);
+  // actual curvature: project the detected points onto the fitted circle and connect them.
+  // This traces the real corner smoothly regardless of the fit centre; fall back to the ideal arc.
   ctx.strokeStyle=col; ctx.lineWidth=2.4; ctx.beginPath();
-  if(fc && fc[3]<6 && fc[2]>0.4*v.rf && fc[2]<3.0*v.rf){
-    const a=fc[0],b=fc[1],R=fc[2];
-    for(let deg=180,st=false;deg<=270;deg+=2){const t=deg*Math.PI/180,px=sx(a+R*Math.cos(t)),py=sy(b+R*Math.sin(t));
-      if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);}
+  if(v.fit && v.fitValid){
+    const a=v.fit.a,b=v.fit.b,R=v.fit.R;
+    for(let i=0,st=false;i<v.outline.length;i++){const o=v.outline[i],dx=o[0]-a,dy=o[1]-b,L=Math.hypot(dx,dy)||1;
+      const px=sx(a+R*dx/L),py=sy(b+R*dy/L); if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);}
   } else {
     for(let deg=180,st=false;deg<=270;deg+=3){const t=deg*Math.PI/180,px=sx(cxc+v.rf*Math.cos(t)),py=sy(cyc+v.rf*Math.sin(t));
       if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);}
   }
   ctx.stroke();
   ctx.fillStyle='#ffe14a'; ctx.beginPath(); ctx.arc(sx(v.apx),sy(v.apy),3.5,0,Math.PI*2); ctx.fill();
-  const ex=m.excess, lab=ex<=0.1?'Sharp':ex.toFixed(2)+' mm rounded';
+  const sev=m.severity!=null?m.severity:m.excess, dev=m.dev||0;
+  const lab=sev<=0.05?'Sharp':((dev<0?'clipped ':'rounded ')+sev.toFixed(2));
   ctx.fillStyle='rgba(14,14,22,0.88)'; ctx.fillRect(0,RES-22,RES,22);
   ctx.fillStyle=col; ctx.font='13px "JetBrains Mono",monospace'; ctx.textBaseline='middle';
   ctx.fillText(`${name}  ${lab}`,7,RES-10);
@@ -860,7 +871,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
       <div class="adjust-hint"><b style="color:#ffd54a">Gold</b> = card edge · <b style="color:#00e5ff">cyan</b>/<b style="color:#ff4081">pink</b> = print border. Drag any line onto where it belongs — corners and grades update when you release. Dashed boxes = corner zones; faint center lines mark the middle of each edge — line each border up there.</div>
     </div>
     <div id="report-body"></div>
-    <div class="foot">Centering and corner <i>roundness</i> are measured. BGS corners reflect roundness; TAG corners reflect corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably, so check the lines and nudge them if needed. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
+    <div class="foot">Centering and corner <i>roundness</i> are measured. BGS and TAG corners reflect corner shape vs factory (flags rounding from wear and tighter/clipped or cut corners); TAG corner <i>fill</i> (its fray/whitening is assumed perfect). Surface, edges, and all whitening/wear are assumed perfect — they need physical inspection. Most accurate on standard-bordered cards; full-art foil cards read less reliably, so check the lines and nudge them if needed. Estimate only — not affiliated with PSA, BGS, or TAG.</div>
     <button class="again" id="again">Grade Another Card</button>`;
   res.style.display='block';
   setupStage(warped,borders,cor);
