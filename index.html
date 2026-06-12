@@ -81,10 +81,15 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
 .metrics{display:grid;grid-template-columns:1fr;gap:14px}
 .mrow{font-size:13px;line-height:1.6}
 .mrow .k{color:var(--muted);font-size:11px;letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:3px}
-.corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.corner-grid .cc{padding:8px;background:var(--panel2);border-radius:10px;border:1px solid transparent}
-.corner-grid .cc canvas{width:100%;height:auto;display:block;border-radius:7px;background:#0a0a14}
-.corner-grid .cc .cs{color:#9a9aa8;font-size:12px;text-align:center;margin-top:7px}
+.corner-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.corner-grid.manual{grid-template-columns:1fr}
+.corner-grid .cc{padding:5px;background:var(--panel2);border-radius:10px;border:1px solid transparent}
+.corner-grid .cc canvas{width:100%;height:auto;display:block;border-radius:7px;background:#0a0a14;touch-action:none}
+.corner-grid .cc .cs{color:#9a9aa8;font-size:12px;text-align:center;margin-top:6px}
+.mcbtn{display:block;margin:8px 0 10px;padding:9px 14px;border-radius:9px;border:1px solid #3a3a4e;
+  background:#191926;color:#c8c8d4;font:600 13px "JetBrains Mono",monospace;cursor:pointer}
+.mcbtn.on{border-color:#40e0d0;color:#40e0d0;background:#0e2a28}
+.mhint{color:#9a9aa8;font-size:12px;line-height:1.5;margin:-4px 0 10px}
 
 .grades{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .grade{background:var(--panel2);border-radius:12px;padding:12px 10px;text-align:center;border-top:2px solid}
@@ -112,7 +117,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v18</div>
+    <div class="ver">v19</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -601,6 +606,8 @@ function roundRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);
   ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
 
 let ADJ=null;  // manual adjustment state (card-edge + print-border lines, in margin-warp px)
+let MANUAL_CORNERS=false;        // slab/fallback mode: user places corner handles
+let MANUAL_PTS={};               // per-corner {apex:[x,y], t:px-along-45deg-diagonal} in window S-coords
 function drawLabel(ctx,txt,x,y,col){const w=ctx.measureText(txt).width+10;
   ctx.fillStyle='rgba(8,8,16,.85)';roundRect(ctx,x-w/2,y-9,w,18,5);ctx.fill();
   ctx.fillStyle=col;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(txt,x,y);}
@@ -710,6 +717,70 @@ function _fitCircle(pts){            // Kasa least-squares + one robust pass -> 
   if(keep.length>=5){const s2=solve(keep); if(s2){a=s2[0];b=s2[1];R=s2[2];}}
   const r2=pts.map(p=>Math.hypot(p[0]-a,p[1]-b)-R), rms=Math.sqrt(r2.reduce((q,v)=>q+v*v,0)/r2.length);
   return [a,b,R,rms]; }
+/* ---- Manual corner mode (slab fallback): user places apex + arc handle ---- */
+const SQRT2M1=Math.SQRT2-1; // setback along 45° diagonal = R*(√2−1) for a circular corner
+function manualMetric(name){
+  const p=MANUAL_PTS[name]; if(!p)return null;
+  const setback_mm=Math.max(0,p.t)/PX_MM_W;
+  const Rmm=setback_mm/SQRT2M1;
+  const dev=Rmm-RFAC_MM;
+  const sevShape=Math.max(0,Math.abs(dev)-COR_DEADBAND);
+  const sevRound=Math.max(0,setback_mm-FACTORY_BASE_MM);
+  const severity=Math.max(sevShape,sevRound);
+  return {setback_mm,Rmm,dev,severity,bgs:cornerBgsDev(severity),tag:cornerTagDev(severity)};
+}
+function initManualPts(){
+  for(const k of ['TL','TR','BL','BR']){
+    if(MANUAL_PTS[k])continue;
+    const m=ADJ.cor.metrics[k], v=m&&m.viz;
+    if(!v)continue;
+    const t=(m.setback_mm>0.3?m.setback_mm:SQRT2M1*RFAC_MM)*PX_MM_W; // start at measured edge, else factory arc
+    MANUAL_PTS[k]={apex:[v.apx,v.apy],t};
+  }
+}
+function recomputeCornerAgg(){
+  const ms=ADJ.cor.metrics; let bg=10.0,tg=1000,worst='TL',wx=-1;
+  for(const k in ms){ bg=Math.min(bg,ms[k].bgs); tg=Math.min(tg,ms[k].tag);
+    const ex=ms[k].excess||0; if(ex>wx){wx=ex;worst=k;} }
+  ADJ.cor.bgsCorner=bg; ADJ.cor.tagCorner=tg; ADJ.cor.worst=worst;
+}
+function applyManual(name){
+  const mm=manualMetric(name); if(!mm)return;
+  const m=ADJ.cor.metrics[name];
+  Object.assign(m,{setback_mm:mm.setback_mm,severity:mm.severity,excess:mm.severity,mm:mm.severity,
+    setback:mm.severity,dev:mm.dev,bgs:mm.bgs,tag:mm.tag,manual:true});
+  recomputeCornerAgg();
+}
+function applyAllManual(){ for(const k of ['TL','TR','BL','BR'])applyManual(k); }
+function manualDragHandlers(el,name){
+  const v=ADJ.cor.metrics[name].viz; if(!v)return;
+  const RES=el.width, f=RES/v.S;
+  const toS=e=>{const r=el.getBoundingClientRect();
+    return [(e.clientX-r.left)*(RES/r.width)/f,(e.clientY-r.top)*(RES/r.height)/f];};
+  let mode=null,raf=false;
+  el.onpointerdown=e=>{
+    const p=MANUAL_PTS[name]; if(!p)return;
+    const [px,py]=toS(e), tol=30/f;
+    const ax=p.apex[0],ay=p.apex[1];
+    const hx=ax+p.t/Math.SQRT2, hy=ay+p.t/Math.SQRT2;
+    const dA=Math.hypot(px-ax,py-ay), dH=Math.hypot(px-hx,py-hy);
+    if(Math.min(dA,dH)>tol)return;
+    mode=dH<=dA?'arc':'apex';
+    el.setPointerCapture(e.pointerId); e.preventDefault();
+  };
+  el.onpointermove=e=>{
+    if(!mode)return; e.preventDefault();
+    const p=MANUAL_PTS[name]; const [px,py]=toS(e);
+    if(mode==='apex'){ p.apex=[Math.max(0,Math.min(v.S-1,px)),Math.max(0,Math.min(v.S-1,py))]; }
+    else{ p.t=Math.max(0,Math.min(0.6*v.S,((px-p.apex[0])+(py-p.apex[1]))/Math.SQRT2)); }
+    if(!raf){ raf=true; requestAnimationFrame(()=>{raf=false; try{drawCornerViz(name);}catch(err){}}); }
+  };
+  el.onpointerup=el.onpointercancel=e=>{
+    if(!mode)return; mode=null;
+    try{el.releasePointerCapture(e.pointerId);}catch(err){}
+    applyManual(name); recomputeBody();
+  };
+}
 function drawCornerViz(name){
   const m=ADJ.cor.metrics[name], el=document.getElementById('ccv-'+name);
   if(!el||!m||!m.viz)return;
@@ -721,6 +792,41 @@ function drawCornerViz(name){
   ctx.save(); ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1;
   for(let i=1;i<6;i++){const p=RES*i/6;ctx.beginPath();ctx.moveTo(p,0);ctx.lineTo(p,RES);ctx.moveTo(0,p);ctx.lineTo(RES,p);ctx.stroke();}
   ctx.restore();
+  if(MANUAL_CORNERS&&MANUAL_PTS[name]){
+    const p=MANUAL_PTS[name], ax=p.apex[0],ay=p.apex[1];
+    const mm=manualMetric(name), col=corColor(mm.severity);
+    // edge lines through the user's apex (square box — drag apex to the true corner)
+    ctx.strokeStyle='rgba(120,240,140,0.92)'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(0,sy(ay)); ctx.lineTo(RES,sy(ay)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx(ax),0); ctx.lineTo(sx(ax),RES); ctx.stroke();
+    // faint 45° guide the arc handle rides on
+    ctx.strokeStyle='rgba(255,255,255,0.25)'; ctx.lineWidth=1; ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(sx(ax),sy(ay));
+    ctx.lineTo(sx(ax+0.6*v.S/Math.SQRT2),sy(ay+0.6*v.S/Math.SQRT2)); ctx.stroke(); ctx.setLineDash([]);
+    // ideal factory arc (cyan dashed)
+    ctx.strokeStyle='#00e5ff'; ctx.lineWidth=2; ctx.setLineDash([4,3]); ctx.beginPath();
+    for(let deg=180,st=false;deg<=270;deg+=3){const t=deg*Math.PI/180,
+      px=sx(ax+v.rf+v.rf*Math.cos(t)),py=sy(ay+v.rf+v.rf*Math.sin(t));
+      if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);} ctx.stroke(); ctx.setLineDash([]);
+    // implied actual arc from the arc handle
+    const Rpx=Math.max(1,p.t/SQRT2M1);
+    ctx.strokeStyle=col; ctx.lineWidth=2.4; ctx.beginPath();
+    for(let deg=180,st=false;deg<=270;deg+=3){const t=deg*Math.PI/180,
+      px=sx(ax+Rpx+Rpx*Math.cos(t)),py=sy(ay+Rpx+Rpx*Math.sin(t));
+      if(!st){ctx.moveTo(px,py);st=true;}else ctx.lineTo(px,py);} ctx.stroke();
+    // handles: apex (yellow) + arc (white ring on diagonal)
+    const hx=ax+p.t/Math.SQRT2, hy=ay+p.t/Math.SQRT2;
+    ctx.fillStyle='#ffe14a'; ctx.beginPath(); ctx.arc(sx(ax),sy(ay),5,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#ffe14a'; ctx.lineWidth=1.6; ctx.beginPath(); ctx.arc(sx(ax),sy(ay),10,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(sx(hx),sy(hy),5,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=1.6; ctx.beginPath(); ctx.arc(sx(hx),sy(hy),10,0,Math.PI*2); ctx.stroke();
+    const lab=mm.severity<=0.05?'Sharp':((mm.dev<0?'clipped ':'rounded ')+mm.severity.toFixed(2));
+    ctx.fillStyle='rgba(14,14,22,0.88)'; ctx.fillRect(0,RES-22,RES,22);
+    ctx.fillStyle=col; ctx.font='13px "JetBrains Mono",monospace'; ctx.textBaseline='middle';
+    ctx.fillText(`${name}  manual · ${lab} · R${mm.Rmm.toFixed(1)}`,7,RES-10);
+    manualDragHandlers(el,name);
+    return;
+  }
   ctx.strokeStyle='rgba(120,240,140,0.92)'; ctx.lineWidth=2;
   ctx.beginPath(); ctx.moveTo(sx(0),sy(v.bt)); ctx.lineTo(sx(v.W-1),sy(v.mt*(v.W-1)+v.bt)); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(sx(v.bl),sy(0)); ctx.lineTo(sx(v.ml*(v.H-1)+v.bl),sy(v.H-1)); ctx.stroke();
@@ -749,7 +855,16 @@ function drawCornerViz(name){
   ctx.fillText(`${name}  ${lab}`,7,RES-10);
 }
 function drawCornerVizAll(){ if(!ADJ||!ADJ.cor)return;
-  for(const name of ['TL','TR','BL','BR']){ try{drawCornerViz(name);}catch(e){console.warn('corner viz',name,e);} } }
+  for(const name of ['TL','TR','BL','BR']){ try{drawCornerViz(name);}catch(e){console.warn('corner viz',name,e);} }
+  const btn=document.getElementById('mcbtn');
+  if(btn)btn.onclick=()=>{
+    MANUAL_CORNERS=!MANUAL_CORNERS;
+    try{
+      if(MANUAL_CORNERS){ initManualPts(); applyAllManual(); }
+      else{ reassessCorners(); }
+    }catch(e){console.warn('manual toggle',e);}
+    recomputeBody();
+  }; }
 function recomputeBody(){
   const cen=computeCenteringGap();
   const gr=estimateGrades(cen,ADJ.cor);
@@ -791,11 +906,12 @@ function setupDrag(){
     ADJ.loupe={key:active,x:p.x,y:p.y};
     redrawStage(); e.preventDefault();});
   const end=()=>{if(active!==null){active=null;ADJ.loupe=null;
-    c.style.cursor='grab'; reassessCorners(); recomputeBody(); redrawStage();}};
+    c.style.cursor='grab'; reassessCorners(); if(MANUAL_CORNERS)applyAllManual(); recomputeBody(); redrawStage();}};
   c.addEventListener('pointerup',end); c.addEventListener('pointercancel',end);
 }
 
 function setupStage(mwarp,borders,cor){
+  MANUAL_CORNERS=false; MANUAL_PTS={};
   const dispW=600,dispH=Math.round(dispW*MH/MW);
   const small=new cv.Mat(); cv.resize(mwarp,small,new cv.Size(dispW,dispH));
   const canvas=document.getElementById('card-canvas');
@@ -824,8 +940,8 @@ function buildBodyHTML(cen,cor,gr,strategy){
   const cc=k=>{const mk=m[k],ex=mk.excess||0;
     const bord=(k===weak&&ex>0.12)?corColor(ex):'transparent';
     return `<div class="cc" style="border-color:${bord}">
-    <canvas id="ccv-${k}" width="240" height="240"></canvas>
-    <div class="cs">BGS ${mk.bgs.toFixed(1)} &nbsp;·&nbsp; TAG ${mk.tag}</div></div>`;};
+    <canvas id="ccv-${k}" width="320" height="320"></canvas>
+    <div class="cs">BGS ${mk.bgs.toFixed(1)} &nbsp;·&nbsp; TAG ${mk.tag}${mk.manual?' &nbsp;·&nbsp; manual':''}</div></div>`;};
   const grade=(co,g,l,col)=>`<div class="grade" style="border-color:${col}">
     <div class="co">${co}</div><div class="g" style="color:${col}">${g}</div><div class="l">${l}</div></div>`;
   let picks='',pi=0;
@@ -843,7 +959,9 @@ function buildBodyHTML(cen,cor,gr,strategy){
           L/R&nbsp; <b style="color:var(--cyan)">${lrHi}/${lrLo}</b> (${lrDir} heavy)
           &nbsp;&nbsp; T/B&nbsp; <b style="color:var(--pink)">${tbHi}/${tbLo}</b> (${tbDir} heavy)</div>
         <div class="mrow"><span class="k">Corners — ideal vs actual curvature (per quadrant; whitening assumed perfect)</span>
-          <div class="corner-grid">${cc('TL')}${cc('TR')}${cc('BL')}${cc('BR')}</div></div>
+          <button class="mcbtn${MANUAL_CORNERS?' on':''}" id="mcbtn">Manual corners: ${MANUAL_CORNERS?'ON':'OFF'}</button>
+          ${MANUAL_CORNERS?'<div class="mhint">For slabs / tricky shots. Drag the <b style="color:#ffe14a">yellow dot</b> to the card\'s true corner (where the edges would meet), then drag the <b style="color:#fff">white ring</b> along the diagonal onto the card\'s actual rounded edge. Grades update on release.</div>':''}
+          <div class="corner-grid${MANUAL_CORNERS?' manual':''}">${cc('TL')}${cc('TR')}${cc('BL')}${cc('BR')}</div></div>
       </div>
     </div>
     <div class="section"><h2>Estimated Grades</h2>
@@ -878,6 +996,7 @@ function renderReport(warped,borders,cen,cor,gr,strategy){
   recomputeBody();
   document.getElementById('again').onclick=()=>{
     if(ADJ&&ADJ.mwarp){try{ADJ.mwarp.delete();}catch(e){}} ADJ=null;
+    MANUAL_CORNERS=false; MANUAL_PTS={};
     res.style.display='none'; res.innerHTML='';
     document.getElementById('file').value='';
     setStatus(''); window.scrollTo({top:0,behavior:'smooth'});
