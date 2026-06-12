@@ -117,7 +117,7 @@ h1{font-family:"Anton",sans-serif;font-weight:400;letter-spacing:.06em;
   <header>
     <h1>Card Grader</h1>
     <div class="sub">Centering · Corners · PSA / BGS / TAG</div>
-    <div class="ver">v19</div>
+    <div class="ver">v20</div>
   </header>
 
   <label class="drop" id="drop" for="file">
@@ -824,7 +824,6 @@ function drawCornerViz(name){
     ctx.fillStyle='rgba(14,14,22,0.88)'; ctx.fillRect(0,RES-22,RES,22);
     ctx.fillStyle=col; ctx.font='13px "JetBrains Mono",monospace'; ctx.textBaseline='middle';
     ctx.fillText(`${name}  manual · ${lab} · R${mm.Rmm.toFixed(1)}`,7,RES-10);
-    manualDragHandlers(el,name);
     return;
   }
   ctx.strokeStyle='rgba(120,240,140,0.92)'; ctx.lineWidth=2;
@@ -855,7 +854,14 @@ function drawCornerViz(name){
   ctx.fillText(`${name}  ${lab}`,7,RES-10);
 }
 function drawCornerVizAll(){ if(!ADJ||!ADJ.cor)return;
-  for(const name of ['TL','TR','BL','BR']){ try{drawCornerViz(name);}catch(e){console.warn('corner viz',name,e);} }
+  for(const name of ['TL','TR','BL','BR']){
+    try{
+      drawCornerViz(name);
+      if(MANUAL_CORNERS&&MANUAL_PTS[name]){
+        const el=document.getElementById('ccv-'+name);
+        if(el)manualDragHandlers(el,name);
+      }
+    }catch(e){console.warn('corner viz',name,e);} }
   const btn=document.getElementById('mcbtn');
   if(btn)btn.onclick=()=>{
     MANUAL_CORNERS=!MANUAL_CORNERS;
